@@ -506,19 +506,36 @@ setInterval(sendReminder, 12 * 60 * 60 * 1000);
 setTimeout(sendReminder, 60000);
 
 // ============================================
-// CHECK-IN — 1 week after ticket closes, DM client
-// Stores closed ticket timestamps
+// CHECK-IN — 7 days after ticket closes, DM client
+// Uses Worker KV for persistence
 // ============================================
-const checkinQueue = new Map(); // username -> timestamp
 
-// When ticket is closed/deleted, add to checkin queue
-const originalDelete = ChannelType.GuildText;
+async function addToCheckinQueue(username) {
+  try {
+    await fetch(WORKER_URL + '/admin/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        pw: ADMIN_PW,
+        _action: 'checkin_add',
+        username: username,
+        timestamp: Date.now()
+      })
+    });
+    // Use a simpler approach — store in KV via a dedicated endpoint
+    await fetch(WORKER_URL + '/bot/checkin-add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pw: ADMIN_PW, username, timestamp: Date.now() })
+    });
+    console.log('📝 Added ' + username + ' to check-in queue (KV)');
+  } catch (e) { console.error('Check-in add error:', e); }
+}
 
 client.on('channelDelete', async (channel) => {
   if (channel.name && channel.name.startsWith('ticket-')) {
     const username = channel.name.replace('ticket-', '');
-    checkinQueue.set(username, Date.now());
-    console.log(`📝 Added ${username} to check-in queue`);
+    await addToCheckinQueue(username);
   }
 });
 
@@ -526,15 +543,24 @@ async function processCheckins() {
   console.log('📩 Processing check-ins...');
   const ONE_WEEK = 7 * 24 * 60 * 60 * 1000;
   
-  for (const [username, timestamp] of checkinQueue) {
-    if (Date.now() - timestamp >= ONE_WEEK) {
-      try {
+  try {
+    // Fetch queue from Worker KV
+    const res = await fetch(WORKER_URL + '/bot/checkin-list', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pw: ADMIN_PW })
+    });
+    const data = await res.json();
+    if (!data.queue) return;
+
+    for (const item of data.queue) {
+      if (Date.now() - item.timestamp >= ONE_WEEK) {
         const guilds = client.guilds.cache;
         for (const [, guild] of guilds) {
           const members = await guild.members.fetch();
           const member = members.find(m => 
-            m.user.username.toLowerCase() === username.toLowerCase() ||
-            m.displayName.toLowerCase() === username.toLowerCase()
+            m.user.username.toLowerCase() === item.username.toLowerCase() ||
+            m.displayName.toLowerCase() === item.username.toLowerCase()
           );
           
           if (member) {
@@ -545,16 +571,21 @@ async function processCheckins() {
               .setFooter({ text: 'Cube Graphics — Automated Check-in' });
             
             await member.send({ embeds: [embed] }).catch(() => {
-              console.log(`Could not DM ${username} (DMs closed)`);
+              console.log('Could not DM ' + item.username);
             });
-            console.log(`✅ Check-in sent to ${username}`);
+            console.log('✅ Check-in sent to ' + item.username);
           }
         }
-      } catch (e) { console.error('Check-in error:', e); }
-      
-      checkinQueue.delete(username);
+        
+        // Remove from queue
+        await fetch(WORKER_URL + '/bot/checkin-remove', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pw: ADMIN_PW, username: item.username })
+        });
+      }
     }
-  }
+  } catch (e) { console.error('Check-in error:', e); }
 }
 
 // Check every 6 hours
