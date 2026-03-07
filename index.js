@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, ChannelType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { Client, GatewayIntentBits, ChannelType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, Events } = require('discord.js');
 
 const client = new Client({
   intents: [
@@ -9,30 +9,29 @@ const client = new Client({
   ]
 });
 
-// ============================================
-// CONFIG — change these
-// ============================================
 const ARTIST_ROLE_ID = '1095427320682119379';
 const TICKET_CATEGORY_NAME = 'TICKETS';
+const WORKER_URL = 'https://cube-api.brgamesjao.workers.dev';
+const ADMIN_PW = 'CubeGraphics';
 
-// In-memory pending orders (from webhook channel)
+const DESIGNERS = ['Lyus', 'Juan', 'Soda', 'Nosher', 'Sueco', 'Sak', 'Thz'];
+
 const pendingOrders = new Map();
+const pendingDone = new Map(); // stores !done form data temporarily
 
 client.once('ready', () => {
-  console.log(`✅ Bot online as ${client.user.tag}`);
-  client.user.setActivity('Cube Graphics Orders', { type: 3 }); // "Watching"
+  console.log(`Bot online as ${client.user.tag}`);
+  client.user.setActivity('Cube Graphics Orders', { type: 3 });
 });
 
 // ============================================
-// DETECT NEW ORDERS FROM WEBHOOK
+// DETECT WEBHOOK ORDERS
 // ============================================
 client.on('messageCreate', async (message) => {
-  // Detect webhook messages from Cube AI
   if (message.author.bot && message.author.username === 'Cube AI' && message.embeds.length > 0) {
     const embed = message.embeds[0];
     if (!embed.title || !embed.title.includes('New Order')) return;
 
-    // Extract discord username from the embed
     let discordUsername = null;
     for (const field of embed.fields) {
       if (field.name.includes('Discord')) {
@@ -43,22 +42,18 @@ client.on('messageCreate', async (message) => {
 
     if (discordUsername) {
       pendingOrders.set(discordUsername.toLowerCase(), {
-        embed: embed,
-        timestamp: Date.now(),
-        channelId: message.channel.id
+        embed, timestamp: Date.now(), channelId: message.channel.id
       });
-      console.log(`📦 New order detected for: ${discordUsername}`);
+      console.log(`New order for: ${discordUsername}`);
 
-      // Also check if user is already in the server
       const guild = message.guild;
       if (guild) {
         const members = await guild.members.fetch();
-        const member = members.find(m => 
+        const member = members.find(m =>
           m.user.username.toLowerCase() === discordUsername.toLowerCase() ||
           m.displayName.toLowerCase() === discordUsername.toLowerCase()
         );
         if (member) {
-          console.log(`👤 User already in server, creating ticket...`);
           await createTicket(guild, member, pendingOrders.get(discordUsername.toLowerCase()));
           pendingOrders.delete(discordUsername.toLowerCase());
         }
@@ -73,43 +68,292 @@ client.on('messageCreate', async (message) => {
     const args = message.content.slice(1).split(' ');
     const cmd = args.shift().toLowerCase();
 
+    // !done — start completion form
+    if (cmd === 'done') {
+      if (!message.channel.name.startsWith('ticket-')) {
+        return message.reply('This command only works in ticket channels.');
+      }
+
+      const clientName = message.channel.name.replace('ticket-', '');
+
+      // Designer select menu
+      const designerSelect = new StringSelectMenuBuilder()
+        .setCustomId('done_designer')
+        .setPlaceholder('Select Designer')
+        .addOptions(DESIGNERS.map(d => ({ label: d, value: d })));
+
+      // Currency select
+      const currencySelect = new StringSelectMenuBuilder()
+        .setCustomId('done_currency')
+        .setPlaceholder('Select Currency')
+        .addOptions([
+          { label: 'USD ($)', value: 'USD', emoji: '💵' },
+          { label: 'BRL (R$)', value: 'BRL', emoji: '💰' },
+          { label: 'Robux (R$)', value: 'RBX', emoji: '🎮' },
+        ]);
+
+      const row1 = new ActionRowBuilder().addComponents(designerSelect);
+      const row2 = new ActionRowBuilder().addComponents(currencySelect);
+
+      const doneEmbed = new EmbedBuilder()
+        .setTitle('Order Completion Form')
+        .setDescription('Fill in the details below to complete this order for **' + clientName + '**.')
+        .setColor(0x3B82F6)
+        .addFields(
+          { name: '👤 Client', value: '`' + clientName + '`', inline: true },
+          { name: '🎨 Designer', value: '_Select below_', inline: true },
+          { name: '💰 Currency', value: '_Select below_', inline: true },
+          { name: '📝 Status', value: 'Waiting for details...', inline: false },
+        );
+
+      const detailsBtn = new ButtonBuilder()
+        .setCustomId('done_details')
+        .setLabel('Fill Details & Price')
+        .setStyle(ButtonStyle.Primary)
+        .setEmoji('📝');
+
+      const confirmBtn = new ButtonBuilder()
+        .setCustomId('done_confirm')
+        .setLabel('Confirm & Complete')
+        .setStyle(ButtonStyle.Success)
+        .setEmoji('✅')
+        .setDisabled(true);
+
+      const cancelBtn = new ButtonBuilder()
+        .setCustomId('done_cancel')
+        .setLabel('Cancel')
+        .setStyle(ButtonStyle.Secondary);
+
+      const row3 = new ActionRowBuilder().addComponents(detailsBtn, confirmBtn, cancelBtn);
+
+      const msg = await message.channel.send({
+        embeds: [doneEmbed],
+        components: [row1, row2, row3]
+      });
+
+      pendingDone.set(message.channel.id, {
+        client: clientName,
+        designer: null,
+        currency: null,
+        description: null,
+        price: null,
+        messageId: msg.id,
+        channelId: message.channel.id,
+      });
+    }
+
     // !close — close ticket
     if (cmd === 'close') {
       if (message.channel.name.startsWith('ticket-')) {
-        const closeEmbed = new EmbedBuilder()
-          .setTitle('🔒 Ticket Closed')
+        const embed = new EmbedBuilder()
+          .setTitle('Ticket Closing')
           .setDescription('This ticket will be deleted in 5 seconds.')
           .setColor(0xEF4444);
-        await message.channel.send({ embeds: [closeEmbed] });
+        await message.channel.send({ embeds: [embed] });
         setTimeout(() => message.channel.delete().catch(() => {}), 5000);
       }
     }
 
-    // !ticket @user — manually create ticket
+    // !ticket @user
     if (cmd === 'ticket' && message.mentions.members.size > 0) {
       const member = message.mentions.members.first();
       await createTicket(message.guild, member, null);
-      message.reply(`✅ Ticket created for ${member.displayName}!`);
+      message.reply('Ticket created for ' + member.displayName + '!');
     }
   }
 });
 
 // ============================================
-// WHEN NEW MEMBER JOINS — CHECK PENDING ORDERS
+// INTERACTIONS (selects, buttons, modals)
+// ============================================
+client.on(Events.InteractionCreate, async (interaction) => {
+  const channelId = interaction.channel?.id;
+  const form = pendingDone.get(channelId);
+
+  // Designer select
+  if (interaction.isStringSelectMenu() && interaction.customId === 'done_designer') {
+    if (!form) return interaction.reply({ content: 'Form expired. Run !done again.', ephemeral: true });
+    form.designer = interaction.values[0];
+    await updateDoneEmbed(interaction, form);
+    await interaction.deferUpdate();
+  }
+
+  // Currency select
+  if (interaction.isStringSelectMenu() && interaction.customId === 'done_currency') {
+    if (!form) return interaction.reply({ content: 'Form expired. Run !done again.', ephemeral: true });
+    form.currency = interaction.values[0];
+    await updateDoneEmbed(interaction, form);
+    await interaction.deferUpdate();
+  }
+
+  // Details button — opens modal
+  if (interaction.isButton() && interaction.customId === 'done_details') {
+    const modal = new ModalBuilder()
+      .setCustomId('done_modal')
+      .setTitle('Order Details');
+
+    const descInput = new TextInputBuilder()
+      .setCustomId('done_desc')
+      .setLabel('What was delivered?')
+      .setPlaceholder('e.g. 2 thumbnails + 1 icon, cartoon style...')
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(true);
+
+    const priceInput = new TextInputBuilder()
+      .setCustomId('done_price')
+      .setLabel('Price (number only)')
+      .setPlaceholder('e.g. 25.00')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true);
+
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(descInput),
+      new ActionRowBuilder().addComponents(priceInput),
+    );
+
+    await interaction.showModal(modal);
+  }
+
+  // Modal submit
+  if (interaction.isModalSubmit() && interaction.customId === 'done_modal') {
+    if (!form) return interaction.reply({ content: 'Form expired. Run !done again.', ephemeral: true });
+    form.description = interaction.fields.getTextInputValue('done_desc');
+    form.price = parseFloat(interaction.fields.getTextInputValue('done_price')) || 0;
+    await updateDoneEmbed(interaction, form);
+    await interaction.deferUpdate();
+  }
+
+  // Confirm button
+  if (interaction.isButton() && interaction.customId === 'done_confirm') {
+    if (!form) return interaction.reply({ content: 'Form expired.', ephemeral: true });
+    if (!form.designer || !form.currency || !form.description || !form.price) {
+      return interaction.reply({ content: 'Please fill all fields first!', ephemeral: true });
+    }
+
+    // Send to Worker dashboard
+    try {
+      await fetch(WORKER_URL + '/admin/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pw: ADMIN_PW,
+          client: form.client,
+          designer: form.designer,
+          currency: form.currency,
+          description: form.description,
+          price: form.price,
+          date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+          timestamp: Date.now(),
+        })
+      });
+    } catch (e) {
+      console.error('Failed to send to dashboard:', e);
+    }
+
+    const completeEmbed = new EmbedBuilder()
+      .setTitle('Order Completed!')
+      .setColor(0x22C55E)
+      .addFields(
+        { name: '👤 Client', value: '`' + form.client + '`', inline: true },
+        { name: '🎨 Designer', value: '`' + form.designer + '`', inline: true },
+        { name: '💰 Price', value: '`' + formatPrice(form.price, form.currency) + '`', inline: true },
+        { name: '📝 Delivered', value: form.description },
+      )
+      .setFooter({ text: 'Order completed and sent to admin dashboard' })
+      .setTimestamp();
+
+    await interaction.update({
+      embeds: [completeEmbed],
+      components: []
+    });
+
+    pendingDone.delete(channelId);
+  }
+
+  // Cancel button
+  if (interaction.isButton() && interaction.customId === 'done_cancel') {
+    pendingDone.delete(channelId);
+    await interaction.update({
+      embeds: [new EmbedBuilder().setTitle('Cancelled').setColor(0xEF4444).setDescription('Order completion cancelled.')],
+      components: []
+    });
+  }
+
+  // Close ticket button
+  if (interaction.isButton() && interaction.customId === 'close_ticket') {
+    const embed = new EmbedBuilder().setTitle('Ticket Closing').setDescription('Deleting in 5 seconds.').setColor(0xEF4444);
+    await interaction.reply({ embeds: [embed] });
+    setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
+  }
+});
+
+// ============================================
+// UPDATE DONE EMBED
+// ============================================
+async function updateDoneEmbed(interaction, form) {
+  try {
+    const channel = await client.channels.fetch(form.channelId);
+    const msg = await channel.messages.fetch(form.messageId);
+
+    const allFilled = form.designer && form.currency && form.description && form.price;
+
+    const embed = new EmbedBuilder()
+      .setTitle('Order Completion Form')
+      .setDescription('Fill in the details below to complete this order for **' + form.client + '**.')
+      .setColor(allFilled ? 0x22C55E : 0x3B82F6)
+      .addFields(
+        { name: '👤 Client', value: '`' + form.client + '`', inline: true },
+        { name: '🎨 Designer', value: form.designer ? '`' + form.designer + '`' : '_Select below_', inline: true },
+        { name: '💰 Price', value: form.price ? '`' + formatPrice(form.price, form.currency) + '`' : '_Fill details_', inline: true },
+        { name: '💱 Currency', value: form.currency ? '`' + form.currency + '`' : '_Select below_', inline: true },
+        { name: '📝 Delivered', value: form.description || '_Click Fill Details_', inline: false },
+        { name: '📊 Status', value: allFilled ? '✅ Ready to confirm!' : '⏳ Waiting for details...', inline: false },
+      );
+
+    // Update confirm button enabled state
+    const designerSelect = new StringSelectMenuBuilder()
+      .setCustomId('done_designer')
+      .setPlaceholder(form.designer || 'Select Designer')
+      .addOptions(DESIGNERS.map(d => ({ label: d, value: d, default: d === form.designer })));
+
+    const currencySelect = new StringSelectMenuBuilder()
+      .setCustomId('done_currency')
+      .setPlaceholder(form.currency || 'Select Currency')
+      .addOptions([
+        { label: 'USD ($)', value: 'USD', emoji: '💵', default: form.currency === 'USD' },
+        { label: 'BRL (R$)', value: 'BRL', emoji: '💰', default: form.currency === 'BRL' },
+        { label: 'Robux (R$)', value: 'RBX', emoji: '🎮', default: form.currency === 'RBX' },
+      ]);
+
+    const row1 = new ActionRowBuilder().addComponents(designerSelect);
+    const row2 = new ActionRowBuilder().addComponents(currencySelect);
+    const row3 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('done_details').setLabel('Fill Details & Price').setStyle(ButtonStyle.Primary).setEmoji('📝'),
+      new ButtonBuilder().setCustomId('done_confirm').setLabel('Confirm & Complete').setStyle(ButtonStyle.Success).setEmoji('✅').setDisabled(!allFilled),
+      new ButtonBuilder().setCustomId('done_cancel').setLabel('Cancel').setStyle(ButtonStyle.Secondary),
+    );
+
+    await msg.edit({ embeds: [embed], components: [row1, row2, row3] });
+  } catch (e) {
+    console.error('Error updating embed:', e);
+  }
+}
+
+function formatPrice(price, currency) {
+  if (currency === 'BRL') return 'R$' + price.toFixed(2);
+  if (currency === 'RBX') return price.toFixed(0) + ' Robux';
+  return '$' + price.toFixed(2);
+}
+
+// ============================================
+// WHEN MEMBER JOINS
 // ============================================
 client.on('guildMemberAdd', async (member) => {
   const username = member.user.username.toLowerCase();
-  const displayName = member.displayName.toLowerCase();
-
-  console.log(`👋 New member: ${member.user.username}`);
-
-  // Check if they have a pending order
-  const order = pendingOrders.get(username) || pendingOrders.get(displayName);
+  const order = pendingOrders.get(username);
   if (order) {
-    console.log(`🎫 Creating ticket for ${member.user.username}...`);
     await createTicket(member.guild, member, order);
     pendingOrders.delete(username);
-    pendingOrders.delete(displayName);
   }
 });
 
@@ -118,128 +362,57 @@ client.on('guildMemberAdd', async (member) => {
 // ============================================
 async function createTicket(guild, member, orderData) {
   try {
-    // Find or create TICKETS category
-    let category = guild.channels.cache.find(
-      c => c.type === ChannelType.GuildCategory && c.name.toUpperCase() === TICKET_CATEGORY_NAME
-    );
+    let category = guild.channels.cache.find(c => c.type === ChannelType.GuildCategory && c.name.toUpperCase() === TICKET_CATEGORY_NAME);
+    if (!category) category = await guild.channels.create({ name: TICKET_CATEGORY_NAME, type: ChannelType.GuildCategory });
 
-    if (!category) {
-      category = await guild.channels.create({
-        name: TICKET_CATEGORY_NAME,
-        type: ChannelType.GuildCategory,
-      });
-    }
+    const existing = guild.channels.cache.find(c => c.name === 'ticket-' + member.user.username.toLowerCase().replace(/[^a-z0-9]/g, '-'));
+    if (existing) return existing;
 
-    // Check if ticket already exists
-    const existingTicket = guild.channels.cache.find(
-      c => c.name === `ticket-${member.user.username.toLowerCase().replace(/[^a-z0-9]/g, '-')}`
-    );
-    if (existingTicket) {
-      console.log(`⚠️ Ticket already exists for ${member.user.username}`);
-      return existingTicket;
-    }
-
-    // Create private channel
     const ticketChannel = await guild.channels.create({
-      name: `ticket-${member.user.username.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
+      name: 'ticket-' + member.user.username.toLowerCase().replace(/[^a-z0-9]/g, '-'),
       type: ChannelType.GuildText,
       parent: category.id,
       permissionOverwrites: [
-        {
-          id: guild.id, // @everyone
-          deny: [PermissionFlagsBits.ViewChannel],
-        },
-        {
-          id: member.id, // client
-          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
-        },
-        {
-          id: ARTIST_ROLE_ID, // artists
-          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
-        },
-        {
-          id: client.user.id, // bot
-          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels],
-        },
+        { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+        { id: member.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+        { id: ARTIST_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+        { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] },
       ],
     });
 
-    // Welcome embed
     const welcomeEmbed = new EmbedBuilder()
-      .setTitle(`🎫  Ticket — ${member.displayName}`)
-      .setDescription(`Hey ${member}! Welcome to your order ticket.\n\nAn artist from <@&${ARTIST_ROLE_ID}> will be with you shortly to discuss your order details.\n\nUse \`!close\` when everything is done.`)
+      .setTitle('Ticket — ' + member.displayName)
+      .setDescription('Hey ' + member + '! Welcome to your order ticket.\n\nAn artist from <@&' + ARTIST_ROLE_ID + '> will be with you shortly.\n\nUse `!done` when the order is complete.\nUse `!close` to close this ticket.')
       .setColor(0x3B82F6)
       .setTimestamp();
 
-    // Close button
     const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId('close_ticket')
-        .setLabel('Close Ticket')
-        .setStyle(ButtonStyle.Danger)
-        .setEmoji('🔒')
+      new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setStyle(ButtonStyle.Danger).setEmoji('🔒')
     );
 
-    await ticketChannel.send({ 
-      content: `${member} <@&${ARTIST_ROLE_ID}>`,
-      embeds: [welcomeEmbed],
-      components: [row]
-    });
+    await ticketChannel.send({ content: member + ' <@&' + ARTIST_ROLE_ID + '>', embeds: [welcomeEmbed], components: [row] });
 
-    // If we have order data, send the order details
     if (orderData && orderData.embed) {
-      const orderEmbed = new EmbedBuilder()
-        .setTitle('📦  Order Details')
-        .setDescription('Here are the details from the AI chat:')
-        .setColor(0x22C55E);
-
-      // Copy fields from the webhook embed
+      const orderEmbed = new EmbedBuilder().setTitle('Order Details').setDescription('Details from the AI chat:').setColor(0x22C55E);
       if (orderData.embed.fields) {
         for (const field of orderData.embed.fields) {
-          if (field.value && field.value !== '\u200b' && !field.value.includes('─────')) {
+          if (field.value && field.value !== '\u200b' && !field.value.includes('─────'))
             orderEmbed.addFields({ name: field.name, value: field.value, inline: field.inline || false });
-          }
         }
       }
-
-      orderEmbed.setFooter({ text: '🤖 Auto-generated from Cube AI order' });
       orderEmbed.setTimestamp();
-
       await ticketChannel.send({ embeds: [orderEmbed] });
     }
 
-    console.log(`✅ Ticket created: #${ticketChannel.name}`);
     return ticketChannel;
-
-  } catch (error) {
-    console.error('❌ Error creating ticket:', error);
-  }
+  } catch (error) { console.error('Error creating ticket:', error); }
 }
 
-// ============================================
-// BUTTON INTERACTION — close ticket
-// ============================================
-client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isButton()) return;
-  if (interaction.customId === 'close_ticket') {
-    const closeEmbed = new EmbedBuilder()
-      .setTitle('🔒 Ticket Closing')
-      .setDescription('This ticket will be deleted in 5 seconds.')
-      .setColor(0xEF4444);
-    await interaction.reply({ embeds: [closeEmbed] });
-    setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
-  }
-});
-
-// ============================================
-// CLEAN OLD PENDING ORDERS (older than 24h)
-// ============================================
+// Cleanup old pending orders
 setInterval(() => {
   const now = Date.now();
-  for (const [key, val] of pendingOrders) {
-    if (now - val.timestamp > 86400000) pendingOrders.delete(key);
-  }
+  for (const [key, val] of pendingOrders) if (now - val.timestamp > 86400000) pendingOrders.delete(key);
+  for (const [key, val] of pendingDone) if (now - val.timestamp > 3600000) pendingDone.delete(key);
 }, 3600000);
 
-// Login
 client.login(process.env.BOT_TOKEN);
