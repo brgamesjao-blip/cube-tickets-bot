@@ -28,7 +28,6 @@ client.once('ready', () => {
 // DETECT WEBHOOK ORDERS
 // ============================================
 client.on('messageCreate', async (message) => {
-  try {
   if (message.author.bot && message.author.username === 'Cube AI' && message.embeds.length > 0) {
     const embed = message.embeds[0];
     if (!embed.title || !embed.title.includes('New Order')) return;
