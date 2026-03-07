@@ -28,6 +28,7 @@ client.once('ready', () => {
 // DETECT WEBHOOK ORDERS
 // ============================================
 client.on('messageCreate', async (message) => {
+  try {
   if (message.author.bot && message.author.username === 'Cube AI' && message.embeds.length > 0) {
     const embed = message.embeds[0];
     if (!embed.title || !embed.title.includes('New Order')) return;
@@ -96,7 +97,7 @@ client.on('messageCreate', async (message) => {
       const row2 = new ActionRowBuilder().addComponents(currencySelect);
 
       const doneEmbed = new EmbedBuilder()
-        .setTitle(form.isReorder ? '🔄 Reorder — New Commission' : '✅ Order Completion Form')
+        .setTitle('Order Completion Form')
         .setDescription('Fill in the details below to complete this order for **' + clientName + '**.')
         .setColor(0x3B82F6)
         .addFields(
@@ -669,7 +670,7 @@ async function sendReminder() {
 // Every 12 hours
 setInterval(sendReminder, 12 * 60 * 60 * 1000);
 // First run 1 minute after startup
-setTimeout(sendReminder, 60000);
+setTimeout(function(){ sendReminder().catch(function(e){console.error('Reminder error:',e)}) }, 60000);
 
 // ============================================
 // CHECK-IN — 7 days after ticket closes, DM client
