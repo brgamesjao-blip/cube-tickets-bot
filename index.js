@@ -142,6 +142,42 @@ client.on('messageCreate', async (message) => {
       });
     }
 
+    // !testcheckin @user — test check-in DM
+    if (cmd === 'testcheckin' && message.mentions.members.size > 0) {
+      const member = message.mentions.members.first();
+      const embed = new EmbedBuilder()
+        .setTitle('Hey! How\'s it going? 👋')
+        .setDescription('It\'s been a week since your order with **Cube Graphics** was completed!\n\nHow\'s the thumbnail performing? If you need any adjustments or want to order something new, just head to our website or open a ticket!\n\n🔗 **cubegraphics.dev**')
+        .setColor(0x3B82F6)
+        .setFooter({ text: 'Cube Graphics — Automated Check-in' });
+      await member.send({ embeds: [embed] }).then(() => {
+        message.reply('✅ Check-in DM sent to ' + member.displayName);
+      }).catch(() => {
+        message.reply('❌ Could not DM ' + member.displayName + ' (DMs closed)');
+      });
+    }
+
+    // !testwinback @user — test win-back DM
+    if (cmd === 'testwinback' && message.mentions.members.size > 0) {
+      const member = message.mentions.members.first();
+      const embed = new EmbedBuilder()
+        .setTitle('We miss you! 💙')
+        .setDescription('Hey ' + member.displayName + '! It\'s been a while since your last order with **Cube Graphics**.\n\nWe\'ve been working on some amazing new styles and we\'d love to create something for you again!\n\n🎨 **Ready to order?** Head to our website:\n🔗 **cubegraphics.dev**\n\n_Reply to this message if you have any questions!_')
+        .setColor(0x8B5CF6)
+        .setFooter({ text: 'Cube Graphics — We\'d love to work with you again' });
+      await member.send({ embeds: [embed] }).then(() => {
+        message.reply('✅ Win-back DM sent to ' + member.displayName);
+      }).catch(() => {
+        message.reply('❌ Could not DM ' + member.displayName + ' (DMs closed)');
+      });
+    }
+
+    // !testreminder — test reminder
+    if (cmd === 'testreminder') {
+      await sendReminder();
+      message.reply('✅ Reminder sent!');
+    }
+
     // !close — close ticket
     if (cmd === 'close') {
       if (message.channel.name.startsWith('ticket-')) {
@@ -417,55 +453,57 @@ setInterval(() => {
 
 
 // ============================================
-// DEADLINE TRACKER — alerts if order takes too long
-// Checks every 2 hours
+// REMINDER — every 12 hours in ⚠️・reminder channel
 // ============================================
-const DEADLINE_HOURS = { small: 48, medium: 72, large: 96 };
-const ALERT_CHANNEL_NAME = 'order-alerts'; // create this channel in your server
+const REMINDER_CHANNEL_NAME = '⚠️・reminder';
 
-async function checkDeadlines() {
-  console.log('⏰ Checking deadlines...');
+async function sendReminder() {
+  console.log('⏰ Sending reminder...');
   try {
     const guilds = client.guilds.cache;
     for (const [, guild] of guilds) {
-      const alertChannel = guild.channels.cache.find(c => c.name === ALERT_CHANNEL_NAME && c.type === ChannelType.GuildText);
-      if (!alertChannel) continue;
+      const channel = guild.channels.cache.find(c => c.name === REMINDER_CHANNEL_NAME || c.name.includes('reminder'));
+      if (!channel) { console.log('No reminder channel found'); continue; }
 
-      // Check all open tickets
+      // Count open tickets
       const tickets = guild.channels.cache.filter(c => c.name.startsWith('ticket-') && c.type === ChannelType.GuildText);
-      for (const [, ticket] of tickets) {
-        const messages = await ticket.messages.fetch({ limit: 5 });
-        const firstMsg = messages.last();
-        if (!firstMsg) continue;
+      const ticketCount = tickets.size;
 
-        const hoursOpen = (Date.now() - firstMsg.createdTimestamp) / (1000 * 60 * 60);
-        
-        if (hoursOpen > 48 && hoursOpen < 49) {
-          const embed = new EmbedBuilder()
-            .setTitle('⚠️ Deadline Alert!')
-            .setDescription(`Ticket **#${ticket.name}** has been open for **${Math.floor(hoursOpen)} hours**.\nPlease check on this order.`)
-            .setColor(0xF59E0B)
-            .setTimestamp();
-          await alertChannel.send({ content: `<@&${ARTIST_ROLE_ID}>`, embeds: [embed] });
-        }
-        
-        if (hoursOpen > 72 && hoursOpen < 73) {
-          const embed = new EmbedBuilder()
-            .setTitle('🔴 Overdue Order!')
-            .setDescription(`Ticket **#${ticket.name}** has been open for **${Math.floor(hoursOpen)} hours**!\nThis order is overdue!`)
-            .setColor(0xEF4444)
-            .setTimestamp();
-          await alertChannel.send({ content: `<@&${ARTIST_ROLE_ID}>`, embeds: [embed] });
-        }
-      }
+      const greetings = [
+        'Hey team! Quick check-in time 🎨',
+        'Yo artists! Let\'s check the status 🔥',
+        'Reminder time! How are we doing? 💪',
+        'Hey everyone! Let\'s stay on track 🚀',
+        'Time for a progress update! ✨',
+      ];
+      const greeting = greetings[Math.floor(Math.random() * greetings.length)];
+
+      const embed = new EmbedBuilder()
+        .setTitle(greeting)
+        .setDescription('How is the progress on current orders? Any updates?\n\n' +
+          '📋 **Open tickets:** ' + ticketCount + '\n\n' +
+          'Please reply with updates on your assignments:\n' +
+          '→ What are you working on?\n' +
+          '→ Any blockers?\n' +
+          '→ Expected completion time?\n\n' +
+          '_Use `!done` in a ticket when finished!_')
+        .setColor(0xF59E0B)
+        .setFooter({ text: 'Cube Graphics — Auto Reminder' })
+        .setTimestamp();
+
+      await channel.send({ 
+        content: '<@&' + ARTIST_ROLE_ID + '>', 
+        embeds: [embed] 
+      });
+      console.log('✅ Reminder sent! Open tickets: ' + ticketCount);
     }
-  } catch (e) { console.error('Deadline check error:', e); }
+  } catch (e) { console.error('Reminder error:', e); }
 }
 
-// Run every 2 hours
-setInterval(checkDeadlines, 2 * 60 * 60 * 1000);
-// Also run 30s after startup
-setTimeout(checkDeadlines, 30000);
+// Every 12 hours
+setInterval(sendReminder, 12 * 60 * 60 * 1000);
+// First run 1 minute after startup
+setTimeout(sendReminder, 60000);
 
 // ============================================
 // CHECK-IN — 1 week after ticket closes, DM client
