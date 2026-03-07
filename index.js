@@ -157,21 +157,6 @@ client.on('messageCreate', async (message) => {
       });
     }
 
-    // !testwinback @user — test win-back DM
-    if (cmd === 'testwinback' && message.mentions.members.size > 0) {
-      const member = message.mentions.members.first();
-      const embed = new EmbedBuilder()
-        .setTitle('We miss you! 💙')
-        .setDescription('Hey ' + member.displayName + '! It\'s been a while since your last order with **Cube Graphics**.\n\nWe\'ve been working on some amazing new styles and we\'d love to create something for you again!\n\n🎨 **Ready to order?** Head to our website:\n🔗 **cubegraphics.dev**\n\n_Reply to this message if you have any questions!_')
-        .setColor(0x8B5CF6)
-        .setFooter({ text: 'Cube Graphics — We\'d love to work with you again' });
-      await member.send({ embeds: [embed] }).then(() => {
-        message.reply('✅ Win-back DM sent to ' + member.displayName);
-      }).catch(() => {
-        message.reply('❌ Could not DM ' + member.displayName + ' (DMs closed)');
-      });
-    }
-
     // !testreminder — test reminder
     if (cmd === 'testreminder') {
       await sendReminder();
@@ -590,62 +575,6 @@ async function processCheckins() {
 
 // Check every 6 hours
 setInterval(processCheckins, 6 * 60 * 60 * 1000);
-
-// ============================================
-// WIN-BACK — 30 days inactive, DM with special offer
-// ============================================
-const winbackSent = new Set(); // track who we already messaged
-
-async function processWinbacks() {
-  console.log('🔄 Processing win-backs...');
-  const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
-  
-  try {
-    const guilds = client.guilds.cache;
-    for (const [, guild] of guilds) {
-      const members = await guild.members.fetch();
-      
-      for (const [, member] of members) {
-        if (member.user.bot) continue;
-        if (winbackSent.has(member.user.username)) continue;
-        
-        // Check if they have no active tickets
-        const hasTicket = guild.channels.cache.find(c => 
-          c.name === 'ticket-' + member.user.username.toLowerCase().replace(/[^a-z0-9]/g, '-')
-        );
-        if (hasTicket) continue;
-        
-        // Check last message in any ticket (approximate activity)
-        const joinedAt = member.joinedTimestamp || 0;
-        const daysSinceJoin = (Date.now() - joinedAt) / (1000 * 60 * 60 * 24);
-        
-        // Only target members who joined 30+ days ago
-        if (daysSinceJoin < 30) continue;
-        
-        // Check if they have the Artist role (skip staff)
-        if (member.roles.cache.has(ARTIST_ROLE_ID)) continue;
-        
-        const embed = new EmbedBuilder()
-          .setTitle('We miss you! 💙')
-          .setDescription('Hey ' + member.displayName + '! It\'s been a while since your last order with **Cube Graphics**.\n\nWe\'ve been working on some amazing new styles and we\'d love to create something for you again!\n\n🎨 **Ready to order?** Head to our website:\n🔗 **cubegraphics.dev**\n\n_Reply to this message if you have any questions!_')
-          .setColor(0x8B5CF6)
-          .setFooter({ text: 'Cube Graphics — We\'d love to work with you again' });
-        
-        await member.send({ embeds: [embed] }).catch(() => {});
-        winbackSent.add(member.user.username);
-        console.log(`💜 Win-back sent to ${member.user.username}`);
-        
-        // Rate limit — max 5 per cycle
-        if (winbackSent.size % 5 === 0) break;
-      }
-    }
-  } catch (e) { console.error('Win-back error:', e); }
-}
-
-// Run every 24 hours
-setInterval(processWinbacks, 24 * 60 * 60 * 1000);
-// First run after 1 minute
-setTimeout(processWinbacks, 60000);
 
 
 client.login(process.env.BOT_TOKEN);
