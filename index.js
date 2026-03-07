@@ -147,7 +147,7 @@ client.on('messageCreate', async (message) => {
       const member = message.mentions.members.first();
       const embed = new EmbedBuilder()
         .setTitle('Hey! How\'s it going? 👋')
-        .setDescription('It\'s been a week since your order with **Cube Graphics** was completed!\n\nHow\'s the thumbnail performing? If you need any adjustments or want to order something new, just head to our website or open a ticket!\n\n🔗 **cubegraphics.dev**')
+        .setDescription('It\'s been a week since your order with **Cube Graphics** was completed!\n\nHow\'s the thumbnail performing? If you need any adjustments or want to order something new, just head to our website or open a ticket!\n\n🔗 **cubegraphics.org**')
         .setColor(0x3B82F6)
         .setFooter({ text: 'Cube Graphics — Automated Check-in' });
       await member.send({ embeds: [embed] }).then(() => {
@@ -553,7 +553,7 @@ async function processCheckins() {
           if (member) {
             const embed = new EmbedBuilder()
               .setTitle('Hey! How\'s it going? 👋')
-              .setDescription('It\'s been a week since your order with **Cube Graphics** was completed!\n\nHow\'s the thumbnail performing? If you need any adjustments or want to order something new, just head to our website or open a ticket!\n\n🔗 **cubegraphics.dev**')
+              .setDescription('It\'s been a week since your order with **Cube Graphics** was completed!\n\nHow\'s the thumbnail performing? If you need any adjustments or want to order something new, just head to our website or open a ticket!\n\n🔗 **cubegraphics.org**')
               .setColor(0x3B82F6)
               .setFooter({ text: 'Cube Graphics — Automated Check-in' });
             
