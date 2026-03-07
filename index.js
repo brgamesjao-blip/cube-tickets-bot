@@ -415,4 +415,168 @@ setInterval(() => {
   for (const [key, val] of pendingDone) if (now - val.timestamp > 3600000) pendingDone.delete(key);
 }, 3600000);
 
+
+// ============================================
+// DEADLINE TRACKER — alerts if order takes too long
+// Checks every 2 hours
+// ============================================
+const DEADLINE_HOURS = { small: 48, medium: 72, large: 96 };
+const ALERT_CHANNEL_NAME = 'order-alerts'; // create this channel in your server
+
+async function checkDeadlines() {
+  console.log('⏰ Checking deadlines...');
+  try {
+    const guilds = client.guilds.cache;
+    for (const [, guild] of guilds) {
+      const alertChannel = guild.channels.cache.find(c => c.name === ALERT_CHANNEL_NAME && c.type === ChannelType.GuildText);
+      if (!alertChannel) continue;
+
+      // Check all open tickets
+      const tickets = guild.channels.cache.filter(c => c.name.startsWith('ticket-') && c.type === ChannelType.GuildText);
+      for (const [, ticket] of tickets) {
+        const messages = await ticket.messages.fetch({ limit: 5 });
+        const firstMsg = messages.last();
+        if (!firstMsg) continue;
+
+        const hoursOpen = (Date.now() - firstMsg.createdTimestamp) / (1000 * 60 * 60);
+        
+        if (hoursOpen > 48 && hoursOpen < 49) {
+          const embed = new EmbedBuilder()
+            .setTitle('⚠️ Deadline Alert!')
+            .setDescription(`Ticket **#${ticket.name}** has been open for **${Math.floor(hoursOpen)} hours**.\nPlease check on this order.`)
+            .setColor(0xF59E0B)
+            .setTimestamp();
+          await alertChannel.send({ content: `<@&${ARTIST_ROLE_ID}>`, embeds: [embed] });
+        }
+        
+        if (hoursOpen > 72 && hoursOpen < 73) {
+          const embed = new EmbedBuilder()
+            .setTitle('🔴 Overdue Order!')
+            .setDescription(`Ticket **#${ticket.name}** has been open for **${Math.floor(hoursOpen)} hours**!\nThis order is overdue!`)
+            .setColor(0xEF4444)
+            .setTimestamp();
+          await alertChannel.send({ content: `<@&${ARTIST_ROLE_ID}>`, embeds: [embed] });
+        }
+      }
+    }
+  } catch (e) { console.error('Deadline check error:', e); }
+}
+
+// Run every 2 hours
+setInterval(checkDeadlines, 2 * 60 * 60 * 1000);
+// Also run 30s after startup
+setTimeout(checkDeadlines, 30000);
+
+// ============================================
+// CHECK-IN — 1 week after ticket closes, DM client
+// Stores closed ticket timestamps
+// ============================================
+const checkinQueue = new Map(); // username -> timestamp
+
+// When ticket is closed/deleted, add to checkin queue
+const originalDelete = ChannelType.GuildText;
+
+client.on('channelDelete', async (channel) => {
+  if (channel.name && channel.name.startsWith('ticket-')) {
+    const username = channel.name.replace('ticket-', '');
+    checkinQueue.set(username, Date.now());
+    console.log(`📝 Added ${username} to check-in queue`);
+  }
+});
+
+async function processCheckins() {
+  console.log('📩 Processing check-ins...');
+  const ONE_WEEK = 7 * 24 * 60 * 60 * 1000;
+  
+  for (const [username, timestamp] of checkinQueue) {
+    if (Date.now() - timestamp >= ONE_WEEK) {
+      try {
+        const guilds = client.guilds.cache;
+        for (const [, guild] of guilds) {
+          const members = await guild.members.fetch();
+          const member = members.find(m => 
+            m.user.username.toLowerCase() === username.toLowerCase() ||
+            m.displayName.toLowerCase() === username.toLowerCase()
+          );
+          
+          if (member) {
+            const embed = new EmbedBuilder()
+              .setTitle('Hey! How\'s it going? 👋')
+              .setDescription('It\'s been a week since your order with **Cube Graphics** was completed!\n\nHow\'s the thumbnail performing? If you need any adjustments or want to order something new, just head to our website or open a ticket!\n\n🔗 **cubegraphics.dev**')
+              .setColor(0x3B82F6)
+              .setFooter({ text: 'Cube Graphics — Automated Check-in' });
+            
+            await member.send({ embeds: [embed] }).catch(() => {
+              console.log(`Could not DM ${username} (DMs closed)`);
+            });
+            console.log(`✅ Check-in sent to ${username}`);
+          }
+        }
+      } catch (e) { console.error('Check-in error:', e); }
+      
+      checkinQueue.delete(username);
+    }
+  }
+}
+
+// Check every 6 hours
+setInterval(processCheckins, 6 * 60 * 60 * 1000);
+
+// ============================================
+// WIN-BACK — 30 days inactive, DM with special offer
+// ============================================
+const winbackSent = new Set(); // track who we already messaged
+
+async function processWinbacks() {
+  console.log('🔄 Processing win-backs...');
+  const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+  
+  try {
+    const guilds = client.guilds.cache;
+    for (const [, guild] of guilds) {
+      const members = await guild.members.fetch();
+      
+      for (const [, member] of members) {
+        if (member.user.bot) continue;
+        if (winbackSent.has(member.user.username)) continue;
+        
+        // Check if they have no active tickets
+        const hasTicket = guild.channels.cache.find(c => 
+          c.name === 'ticket-' + member.user.username.toLowerCase().replace(/[^a-z0-9]/g, '-')
+        );
+        if (hasTicket) continue;
+        
+        // Check last message in any ticket (approximate activity)
+        const joinedAt = member.joinedTimestamp || 0;
+        const daysSinceJoin = (Date.now() - joinedAt) / (1000 * 60 * 60 * 24);
+        
+        // Only target members who joined 30+ days ago
+        if (daysSinceJoin < 30) continue;
+        
+        // Check if they have the Artist role (skip staff)
+        if (member.roles.cache.has(ARTIST_ROLE_ID)) continue;
+        
+        const embed = new EmbedBuilder()
+          .setTitle('We miss you! 💙')
+          .setDescription('Hey ' + member.displayName + '! It\'s been a while since your last order with **Cube Graphics**.\n\nWe\'ve been working on some amazing new styles and we\'d love to create something for you again!\n\n🎨 **Ready to order?** Head to our website:\n🔗 **cubegraphics.dev**\n\n_Reply to this message if you have any questions!_')
+          .setColor(0x8B5CF6)
+          .setFooter({ text: 'Cube Graphics — We\'d love to work with you again' });
+        
+        await member.send({ embeds: [embed] }).catch(() => {});
+        winbackSent.add(member.user.username);
+        console.log(`💜 Win-back sent to ${member.user.username}`);
+        
+        // Rate limit — max 5 per cycle
+        if (winbackSent.size % 5 === 0) break;
+      }
+    }
+  } catch (e) { console.error('Win-back error:', e); }
+}
+
+// Run every 24 hours
+setInterval(processWinbacks, 24 * 60 * 60 * 1000);
+// First run after 1 minute
+setTimeout(processWinbacks, 60000);
+
+
 client.login(process.env.BOT_TOKEN);
