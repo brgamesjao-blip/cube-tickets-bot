@@ -413,19 +413,16 @@ async function createTicket(guild, member, orderData) {
       new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setStyle(ButtonStyle.Danger).setEmoji('🔒')
     );
 
-    await ticketChannel.send({ content: '<@' + member.id + '> <@&' + ARTIST_ROLE_ID + '>', embeds: [welcomeEmbed], components: [row] });
-
-    if (orderData && orderData.embed) {
-      const orderEmbed = new EmbedBuilder().setTitle('Order Details').setDescription('Details from the AI chat:').setColor(0x22C55E);
-      if (orderData.embed.fields) {
-        for (const field of orderData.embed.fields) {
-          if (field.value && field.value !== '\u200b' && !field.value.includes('─────'))
-            orderEmbed.addFields({ name: field.name, value: field.value, inline: field.inline || false });
-        }
+    // Add order details to welcome embed if available
+    if (orderData && orderData.embed && orderData.embed.fields) {
+      welcomeEmbed.addFields({ name: '\u200b', value: '**───── Order Details ─────**', inline: false });
+      for (const field of orderData.embed.fields) {
+        if (field.value && field.value !== '\u200b' && !field.value.includes('─────'))
+          welcomeEmbed.addFields({ name: field.name, value: field.value, inline: field.inline || false });
       }
-      orderEmbed.setTimestamp();
-      await ticketChannel.send({ embeds: [orderEmbed] });
     }
+
+    await ticketChannel.send({ content: '<@' + member.id + '> <@&' + ARTIST_ROLE_ID + '>', embeds: [welcomeEmbed], components: [row] });
 
     return ticketChannel;
   } catch (error) { console.error('Error creating ticket:', error); }
