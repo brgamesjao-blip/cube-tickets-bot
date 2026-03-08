@@ -405,7 +405,7 @@ async function createTicket(guild, member, orderData) {
 
     const welcomeEmbed = new EmbedBuilder()
       .setTitle('Ticket — ' + member.displayName)
-      .setDescription('Hey ' + member + '! Welcome to your order ticket.\n\nAn artist from <@&' + ARTIST_ROLE_ID + '> will be with you shortly.\n\nUse `!done` when the order is complete.\nUse `!close` to close this ticket.')
+      .setDescription('Hey <@' + member.id + '>! Welcome to your order ticket.\n\nAn artist from <@&' + ARTIST_ROLE_ID + '> will be with you shortly.\n\nUse `!done` when the order is complete.\nUse `!close` to close this ticket.')
       .setColor(0x3B82F6)
       .setTimestamp();
 
@@ -413,7 +413,7 @@ async function createTicket(guild, member, orderData) {
       new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setStyle(ButtonStyle.Danger).setEmoji('🔒')
     );
 
-    await ticketChannel.send({ content: member + ' <@&' + ARTIST_ROLE_ID + '>', embeds: [welcomeEmbed], components: [row] });
+    await ticketChannel.send({ content: '<@' + member.id + '> <@&' + ARTIST_ROLE_ID + '>', embeds: [welcomeEmbed], components: [row] });
 
     if (orderData && orderData.embed) {
       const orderEmbed = new EmbedBuilder().setTitle('Order Details').setDescription('Details from the AI chat:').setColor(0x22C55E);
