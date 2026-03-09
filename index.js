@@ -186,15 +186,10 @@ client.on('messageCreate', async (message) => {
       const orderEmbed = new EmbedBuilder()
         .setColor(0x3B82F6)
         .setDescription(
-          '<:Blue_Ticket:> **READY TO BOOST YOUR GAME?** <:Blue_Ticket:>\n\n' +
-          '<:j_dot:> Open a ticket right here and our team will help you create stunning thumbnails and icons for your Roblox game!\n\n' +
-          '<:j_dot:> Or if you prefer, visit our website and place your order with our **personalized AI assistant**:\n' +
-          '🌐 **[cubegraphics.org](https://cubegraphics.org)**\n\n' +
-          '━━━━━━━━━━━━━━━━━━━━━━\n' +
-          '✨ Premium quality thumbnails & icons\n' +
-          '⚡ Fast delivery (24-48h)\n' +
-          '🎨 Professional cartoon style\n' +
-          '━━━━━━━━━━━━━━━━━━━━━━'
+          '<:Blue_Ticket:1415843891894026271> **READY TO BOOST YOUR GAME?** <:Blue_Ticket:1415843891894026271>\n\n' +
+          '<:j_dot:1415844475120386230> Open a ticket right here and our team will help you create **stunning thumbnails and icons** for your Roblox game!\n\n' +
+          '<:j_dot:1415844475120386230> Or if you prefer, visit our **website** and place your order with our **personalized AI assistant:**\n' +
+          '<:j_dot:1415844475120386230> **[cubegraphics.org](https://cubegraphics.org)**'
         );
 
       const row = new ActionRowBuilder().addComponents(
