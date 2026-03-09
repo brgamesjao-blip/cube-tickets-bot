@@ -301,18 +301,19 @@ client.on('messageCreate', async (message) => {
     // !revision — track revision in ticket
     if (cmd === 'revision') {
       if (!message.channel.name.includes('ticket-')) return;
-      const msgs = await message.channel.messages.fetch({ limit: 100 });
-      // Find last reset marker
-      const resetMsg = msgs.find(m => m.author.bot && m.embeds.length > 0 && m.embeds[0].description && m.embeds[0].description.includes('[REVISION_RESET]'));
-      const resetTime = resetMsg ? resetMsg.createdTimestamp : 0;
-      // Count revisions after last reset
-      const revCount = msgs.filter(m => m.content.toLowerCase().startsWith('!revision') && !m.author.bot && m.createdTimestamp > resetTime).size;
+      const topic = message.channel.topic || '';
+      const match = topic.match(/REV:(\d+)/);
+      let revCount = match ? parseInt(match[1]) + 1 : 1;
       const maxRevisions = 3;
+      
+      // Save new count to topic
+      const cleanTopic = topic.replace(/REV:\d+/g, '').trim();
+      await message.channel.setTopic((cleanTopic + ' REV:' + revCount).trim()).catch(() => {});
       
       if (revCount > maxRevisions) {
         const limitEmbed = new EmbedBuilder()
           .setColor(0xEF4444)
-          .setDescription('⚠️ **Revision ' + revCount + '/' + maxRevisions + '** — Maximum revisions reached! Please contact an admin for additional revisions.');
+          .setDescription('⚠️ **Revision ' + revCount + '/' + maxRevisions + '** — Maximum revisions reached! Contact an admin.');
         return message.channel.send({ embeds: [limitEmbed] });
       }
 
@@ -327,9 +328,13 @@ client.on('messageCreate', async (message) => {
       if (!message.member.roles.cache.has(ARTIST_ROLE_ID)) return;
       if (!message.channel.name.includes('ticket-')) return message.reply('Use this in a ticket channel.');
       
+      // Remove ALL REV entries from topic
+      const topic = (message.channel.topic || '').replace(/REV:\d+/g, '').trim();
+      await message.channel.setTopic(topic || ' ').catch(() => {});
+      
       const resetEmbed = new EmbedBuilder()
         .setColor(0x22C55E)
-        .setDescription('✅ **Revision count has been reset.** [REVISION_RESET]');
+        .setDescription('✅ **Revision count has been reset to 0.**');
       await message.channel.send({ embeds: [resetEmbed] });
     }
 
