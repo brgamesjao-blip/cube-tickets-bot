@@ -175,12 +175,16 @@ client.on('messageCreate', async (message) => {
       // Delete the command message
       message.delete().catch(() => {});
 
-      // Create the banner attachment
-      const banner = new AttachmentBuilder('./ORDER_NOW_-_BANNER.png', { name: 'banner.png' });
+      let bannerFile = null;
+      try {
+        const fs = require('fs');
+        if (fs.existsSync('./ORDER_NOW_-_BANNER.png')) {
+          bannerFile = new AttachmentBuilder('./ORDER_NOW_-_BANNER.png', { name: 'banner.png' });
+        }
+      } catch(e) {}
 
       const orderEmbed = new EmbedBuilder()
         .setColor(0x3B82F6)
-        .setImage('attachment://banner.png')
         .setDescription(
           '<:Blue_Ticket:> **READY TO BOOST YOUR GAME?** <:Blue_Ticket:>\n\n' +
           '<:j_dot:> Open a ticket right here and our team will help you create stunning thumbnails and icons for your Roblox game!\n\n' +
@@ -200,11 +204,12 @@ client.on('messageCreate', async (message) => {
           .setStyle(ButtonStyle.Primary)
       );
 
-      await message.channel.send({
-        embeds: [orderEmbed],
-        files: [banner],
-        components: [row]
-      });
+      if (bannerFile) orderEmbed.setImage('attachment://banner.png');
+      
+      const sendOptions = { embeds: [orderEmbed], components: [row] };
+      if (bannerFile) sendOptions.files = [bannerFile];
+      
+      await message.channel.send(sendOptions);
     }
 
     // !close — close ticket
