@@ -11,6 +11,7 @@ const client = new Client({
 });
 
 const ARTIST_ROLE_ID = '1095427320682119379';
+const revisionCounts = new Map();
 const TICKET_CATEGORY_NAME = 'TICKETS';
 const WORKER_URL = 'https://cube-api.brgamesjao.workers.dev';
 const ADMIN_PW = 'CubeGraphics';
@@ -301,14 +302,11 @@ client.on('messageCreate', async (message) => {
     // !revision — track revision in ticket
     if (cmd === 'revision') {
       if (!message.channel.name.includes('ticket-')) return;
-      const topic = message.channel.topic || '';
-      const match = topic.match(/REV:(\d+)/);
-      let revCount = match ? parseInt(match[1]) + 1 : 1;
+      const chId = message.channel.id;
+      const current = revisionCounts.get(chId) || 0;
+      const revCount = current + 1;
+      revisionCounts.set(chId, revCount);
       const maxRevisions = 3;
-      
-      // Save new count to topic
-      const cleanTopic = topic.replace(/REV:\d+/g, '').trim();
-      await message.channel.setTopic((cleanTopic + ' REV:' + revCount).trim()).catch(() => {});
       
       if (revCount > maxRevisions) {
         const limitEmbed = new EmbedBuilder()
@@ -328,9 +326,7 @@ client.on('messageCreate', async (message) => {
       if (!message.member.roles.cache.has(ARTIST_ROLE_ID)) return;
       if (!message.channel.name.includes('ticket-')) return message.reply('Use this in a ticket channel.');
       
-      // Remove ALL REV entries from topic
-      const topic = (message.channel.topic || '').replace(/REV:\d+/g, '').trim();
-      await message.channel.setTopic(topic || ' ').catch(() => {});
+      revisionCounts.set(message.channel.id, 0);
       
       const resetEmbed = new EmbedBuilder()
         .setColor(0x22C55E)
