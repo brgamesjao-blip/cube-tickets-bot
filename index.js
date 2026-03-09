@@ -225,10 +225,20 @@ client.on('messageCreate', async (message) => {
       try {
         const fs = require('fs');
         const files = [];
+        const embeds = [];
+
         for (let i = 1; i <= 5; i++) {
           const filePath = './portfolio/' + matched + i + '.png';
           if (fs.existsSync(filePath)) {
             files.push(new AttachmentBuilder(filePath, { name: matched + i + '.png' }));
+            const embed = new EmbedBuilder()
+              .setColor(0x3B82F6)
+              .setImage('attachment://' + matched + i + '.png');
+            if (i === 1) {
+              embed.setTitle('<:Blue_Ticket:1415843891894026271>  ' + matched + "'s Portfolio");
+              embed.setDescription('<:j_dot:1415844475120386230> Here are some of **' + matched + "'s** best works!");
+            }
+            embeds.push(embed);
           }
         }
 
@@ -236,28 +246,10 @@ client.on('messageCreate', async (message) => {
           return message.reply('No portfolio images found for ' + matched + '.');
         }
 
-        const portfolioEmbed = new EmbedBuilder()
-          .setColor(0x3B82F6)
-          .setTitle('<:Blue_Ticket:1415843891894026271>  ' + matched + "'s Portfolio")
-          .setDescription('<:j_dot:1415844475120386230> Here are some of **' + matched + "'s** best works!\n\n" + '<:j_dot:1415844475120386230> Want to order? Open a ticket or visit **[cubegraphics.org](https://cubegraphics.org)**')
-          .setImage('attachment://' + matched + '1.png')
-          .setTimestamp();
-
-        // Send main embed with first image
-        await message.channel.send({ embeds: [portfolioEmbed], files: [files[0]] });
-
-        // Send remaining images in batches
-        if (files.length > 1) {
-          const remaining = files.slice(1);
-          // Send in groups of 4 (Discord limit per message for embeds)
-          for (let i = 0; i < remaining.length; i += 4) {
-            const batch = remaining.slice(i, i + 4);
-            await message.channel.send({ files: batch });
-          }
-        }
+        await message.channel.send({ embeds: embeds, files: files });
       } catch (e) {
         console.error('Portfolio error:', e);
-        message.reply('Error loading portfolio. Make sure images are uploaded.');
+        message.reply('Error loading portfolio.');
       }
     }
 
