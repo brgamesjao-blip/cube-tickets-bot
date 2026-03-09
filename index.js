@@ -576,17 +576,6 @@ setTimeout(function(){ sendReminder().catch(function(e){console.error('Reminder 
 
 async function addToCheckinQueue(username) {
   try {
-    await fetch(WORKER_URL + '/admin/complete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        pw: ADMIN_PW,
-        _action: 'checkin_add',
-        username: username,
-        timestamp: Date.now()
-      })
-    });
-    // Use a simpler approach — store in KV via a dedicated endpoint
     await fetch(WORKER_URL + '/bot/checkin-add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
