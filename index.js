@@ -226,9 +226,9 @@ client.on('messageCreate', async (message) => {
         const fs = require('fs');
         const files = [];
         for (let i = 1; i <= 5; i++) {
-          const filePath = './portfolio/' + matched + '_' + i + '.png';
+          const filePath = './portfolio/' + matched + i + '.png';
           if (fs.existsSync(filePath)) {
-            files.push(new AttachmentBuilder(filePath, { name: matched + '_' + i + '.png' }));
+            files.push(new AttachmentBuilder(filePath, { name: matched + i + '.png' }));
           }
         }
 
@@ -240,7 +240,7 @@ client.on('messageCreate', async (message) => {
           .setColor(0x3B82F6)
           .setTitle('<:Blue_Ticket:1415843891894026271>  ' + matched + "'s Portfolio")
           .setDescription('<:j_dot:1415844475120386230> Here are some of **' + matched + "'s** best works!\n\n" + '<:j_dot:1415844475120386230> Want to order? Open a ticket or visit **[cubegraphics.org](https://cubegraphics.org)**')
-          .setImage('attachment://' + matched + '_1.png')
+          .setImage('attachment://' + matched + '1.png')
           .setTimestamp();
 
         // Send main embed with first image
