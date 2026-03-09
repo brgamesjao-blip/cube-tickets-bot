@@ -1,4 +1,5 @@
-const { Client, GatewayIntentBits, ChannelType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, Events } = require('discord.js');
+const { Client, GatewayIntentBits, ChannelType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, Events, AttachmentBuilder } = require('discord.js');
+const path = require('path');
 
 const client = new Client({
   intents: [
@@ -164,6 +165,48 @@ client.on('messageCreate', async (message) => {
     }
 
     
+    
+    // !ordermsg — send permanent order message with banner and ticket button
+    if (cmd === 'ordermsg') {
+      if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return message.reply('Only admins can use this command.');
+      }
+
+      // Delete the command message
+      message.delete().catch(() => {});
+
+      // Create the banner attachment
+      const banner = new AttachmentBuilder('./ORDER_NOW_-_BANNER.png', { name: 'banner.png' });
+
+      const orderEmbed = new EmbedBuilder()
+        .setColor(0x3B82F6)
+        .setImage('attachment://banner.png')
+        .setDescription(
+          '<:Blue_Ticket:> **READY TO BOOST YOUR GAME?** <:Blue_Ticket:>\n\n' +
+          '<:j_dot:> Open a ticket right here and our team will help you create stunning thumbnails and icons for your Roblox game!\n\n' +
+          '<:j_dot:> Or if you prefer, visit our website and place your order with our **personalized AI assistant**:\n' +
+          '🌐 **[cubegraphics.org](https://cubegraphics.org)**\n\n' +
+          '━━━━━━━━━━━━━━━━━━━━━━\n' +
+          '✨ Premium quality thumbnails & icons\n' +
+          '⚡ Fast delivery (24-48h)\n' +
+          '🎨 Professional cartoon style\n' +
+          '━━━━━━━━━━━━━━━━━━━━━━'
+        );
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('open_ticket')
+          .setLabel('🎫 Open a Ticket')
+          .setStyle(ButtonStyle.Primary)
+      );
+
+      await message.channel.send({
+        embeds: [orderEmbed],
+        files: [banner],
+        components: [row]
+      });
+    }
+
     // !close — close ticket
     if (cmd === 'close') {
       if (message.channel.name.startsWith('ticket-')) {
@@ -189,6 +232,43 @@ client.on('messageCreate', async (message) => {
 // INTERACTIONS (selects, buttons, modals)
 // ============================================
 client.on(Events.InteractionCreate, async (interaction) => {
+
+  // Open ticket button from order message
+  if (interaction.isButton() && interaction.customId === 'open_ticket') {
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      const member = interaction.member;
+      const guild = interaction.guild;
+      
+      // Check if user already has an open ticket
+      const existingTicket = guild.channels.cache.find(
+        ch => ch.name === 'ticket-' + member.user.username.toLowerCase() && ch.parentId
+      );
+      
+      if (existingTicket) {
+        return interaction.editReply({ content: '🎫 You already have an open ticket: <#' + existingTicket.id + '>' });
+      }
+
+      // Create ticket
+      await createTicket(guild, member, null);
+      
+      const newTicket = guild.channels.cache.find(
+        ch => ch.name === 'ticket-' + member.user.username.toLowerCase()
+      );
+      
+      if (newTicket) {
+        interaction.editReply({ content: '🎫 Your ticket has been created: <#' + newTicket.id + '>' });
+      } else {
+        interaction.editReply({ content: '🎫 Your ticket is being created! Check the tickets category.' });
+      }
+    } catch (e) {
+      console.error('Ticket button error:', e);
+      interaction.editReply({ content: '❌ Error creating ticket. Please try again.' });
+    }
+  }
+
+
   const channelId = interaction.channel?.id;
   const form = pendingDone.get(channelId);
 
