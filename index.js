@@ -186,9 +186,9 @@ client.on('messageCreate', async (message) => {
       const orderEmbed = new EmbedBuilder()
         .setColor(0x3B82F6)
         .setDescription(
-          '<:Blue_Ticket:1415843891894026271> **READY TO BOOST YOUR GAME?** <:Blue_Ticket:1415843891894026271>\n\n\n' +
-          '<:j_dot:1415844475120386230> Open a ticket right here and our team will help you create **stunning thumbnails and icons** for your Roblox game!\n\n\n' +
-          '<:j_dot:1415844475120386230> Or if you prefer, visit our **website** and place your order with our **personalized AI assistant:**\n\n\n' +
+          '<:Blue_Ticket:1415843891894026271> **READY TO BOOST YOUR GAME?** <:Blue_Ticket:1415843891894026271>\n\n' +
+          '<:j_dot:1415844475120386230> Open a ticket right here and our team will help you create **stunning thumbnails and icons** for your Roblox game!\n\n' +
+          '<:j_dot:1415844475120386230> Or if you prefer, visit our **website** and place your order with our **personalized AI assistant:**\n\n' +
           '<:j_dot:1415844475120386230> **[CUBEGRAPHICS.ORG](https://cubegraphics.org)**'
         );
 
@@ -205,6 +205,60 @@ client.on('messageCreate', async (message) => {
       if (bannerFile) sendOptions.files = [bannerFile];
       
       await message.channel.send(sendOptions);
+    }
+
+    // !portfolio <designer> — show designer portfolio (artists only)
+    if (cmd === 'portfolio') {
+      // Check if user has Artist role
+      if (!message.member.roles.cache.has(ARTIST_ROLE_ID)) {
+        return message.reply('Only artists can use this command.');
+      }
+
+      const designerName = args[0];
+      const validDesigners = ['Lyus', 'Thz', 'Nosher', 'Soda'];
+      const matched = validDesigners.find(d => d.toLowerCase() === (designerName || '').toLowerCase());
+
+      if (!matched) {
+        return message.reply('Usage: `!portfolio Lyus`, `!portfolio Thz`, `!portfolio Nosher`, or `!portfolio Soda`');
+      }
+
+      try {
+        const fs = require('fs');
+        const files = [];
+        for (let i = 1; i <= 5; i++) {
+          const filePath = './portfolio/' + matched + '_' + i + '.png';
+          if (fs.existsSync(filePath)) {
+            files.push(new AttachmentBuilder(filePath, { name: matched + '_' + i + '.png' }));
+          }
+        }
+
+        if (files.length === 0) {
+          return message.reply('No portfolio images found for ' + matched + '.');
+        }
+
+        const portfolioEmbed = new EmbedBuilder()
+          .setColor(0x3B82F6)
+          .setTitle('<:Blue_Ticket:1415843891894026271>  ' + matched + "'s Portfolio")
+          .setDescription('<:j_dot:1415844475120386230> Here are some of **' + matched + "'s** best works!\n\n" + '<:j_dot:1415844475120386230> Want to order? Open a ticket or visit **[cubegraphics.org](https://cubegraphics.org)**')
+          .setImage('attachment://' + matched + '_1.png')
+          .setTimestamp();
+
+        // Send main embed with first image
+        await message.channel.send({ embeds: [portfolioEmbed], files: [files[0]] });
+
+        // Send remaining images in batches
+        if (files.length > 1) {
+          const remaining = files.slice(1);
+          // Send in groups of 4 (Discord limit per message for embeds)
+          for (let i = 0; i < remaining.length; i += 4) {
+            const batch = remaining.slice(i, i + 4);
+            await message.channel.send({ files: batch });
+          }
+        }
+      } catch (e) {
+        console.error('Portfolio error:', e);
+        message.reply('Error loading portfolio. Make sure images are uploaded.');
+      }
     }
 
     // !close — close ticket
