@@ -250,6 +250,75 @@ client.on('messageCreate', async (message) => {
       }
     }
 
+    // !help — list all commands
+    if (cmd === 'help') {
+      const helpEmbed = new EmbedBuilder()
+        .setColor(0x3B82F6)
+        .setTitle('<:Blue_Ticket:1415843891894026271> Cube Tickets — Commands')
+        .setDescription(
+          '**Everyone:**\n' +
+          '<:j_dot:1415844475120386230> `!help` — Show this list\n\n' +
+          '**Artists Only:**\n' +
+          '<:j_dot:1415844475120386230> `!done` — Complete an order (opens form)\n' +
+          '<:j_dot:1415844475120386230> `!close` — Close current ticket\n' +
+          '<:j_dot:1415844475120386230> `!rush` — Mark ticket as rush (⚠️)\n' +
+          '<:j_dot:1415844475120386230> `!unrush` — Remove rush from ticket\n' +
+          '<:j_dot:1415844475120386230> `!portfolio <name>` — Show designer portfolio\n' +
+          '<:j_dot:1415844475120386230> `!revision` — Track revision count\n\n' +
+          '**Admin Only:**\n' +
+          '<:j_dot:1415844475120386230> `!ticket @user` — Create ticket for user\n' +
+          '<:j_dot:1415844475120386230> `!ordermsg` — Send order message to channel'
+        )
+        .setTimestamp();
+      return message.channel.send({ embeds: [helpEmbed] });
+    }
+
+    // !rush — mark ticket as rush
+    if (cmd === 'rush') {
+      if (!message.member.roles.cache.has(ARTIST_ROLE_ID)) return;
+      if (!message.channel.name.startsWith('ticket-')) return message.reply('Use this in a ticket channel.');
+      const name = message.channel.name;
+      if (name.startsWith('⚠️')) return message.reply('This ticket is already marked as rush.');
+      await message.channel.setName('⚠️' + name).catch(() => {});
+      const rushEmbed = new EmbedBuilder()
+        .setColor(0xF59E0B)
+        .setDescription('⚠️ **This ticket has been marked as RUSH!**');
+      await message.channel.send({ embeds: [rushEmbed] });
+    }
+
+    // !unrush — remove rush from ticket
+    if (cmd === 'unrush') {
+      if (!message.member.roles.cache.has(ARTIST_ROLE_ID)) return;
+      if (!message.channel.name.startsWith('⚠️')) return message.reply('This ticket is not marked as rush.');
+      const name = message.channel.name.replace('⚠️', '');
+      await message.channel.setName(name).catch(() => {});
+      const unrushEmbed = new EmbedBuilder()
+        .setColor(0x22C55E)
+        .setDescription('✅ **Rush removed from this ticket.**');
+      await message.channel.send({ embeds: [unrushEmbed] });
+    }
+
+    // !revision — track revision in ticket
+    if (cmd === 'revision') {
+      if (!message.channel.name.includes('ticket-')) return;
+      // Count how many times !revision was used in this channel
+      const msgs = await message.channel.messages.fetch({ limit: 100 });
+      const revCount = msgs.filter(m => m.content.toLowerCase().startsWith('!revision') && !m.author.bot).size;
+      const maxRevisions = 3;
+      
+      if (revCount > maxRevisions) {
+        const limitEmbed = new EmbedBuilder()
+          .setColor(0xEF4444)
+          .setDescription('⚠️ **Revision ' + revCount + '/' + maxRevisions + '** — Maximum revisions reached! Please contact an admin for additional revisions.');
+        return message.channel.send({ embeds: [limitEmbed] });
+      }
+
+      const revEmbed = new EmbedBuilder()
+        .setColor(0xF59E0B)
+        .setDescription('🔄 **Revision ' + revCount + '/' + maxRevisions + '** — Client requested changes.');
+      await message.channel.send({ embeds: [revEmbed] });
+    }
+
     // !close — close ticket
     if (cmd === 'close') {
       if (message.channel.name.startsWith('ticket-')) {
