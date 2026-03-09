@@ -225,20 +225,11 @@ client.on('messageCreate', async (message) => {
       try {
         const fs = require('fs');
         const files = [];
-        const embeds = [];
 
-        for (let i = 1; i <= 5; i++) {
+        for (let i = 1; i <= 4; i++) {
           const filePath = './portfolio/' + matched + i + '.png';
           if (fs.existsSync(filePath)) {
             files.push(new AttachmentBuilder(filePath, { name: matched + i + '.png' }));
-            const embed = new EmbedBuilder()
-              .setColor(0x3B82F6)
-              .setImage('attachment://' + matched + i + '.png');
-            if (i === 1) {
-              embed.setTitle('<:Blue_Ticket:1415843891894026271>  ' + matched + "'s Portfolio");
-              embed.setDescription('<:j_dot:1415844475120386230> Here are some of **' + matched + "'s** best works!");
-            }
-            embeds.push(embed);
           }
         }
 
@@ -246,7 +237,13 @@ client.on('messageCreate', async (message) => {
           return message.reply('No portfolio images found for ' + matched + '.');
         }
 
-        await message.channel.send({ embeds: embeds, files: files });
+        const embed = new EmbedBuilder()
+          .setColor(0x3B82F6)
+          .setTitle('<:Blue_Ticket:1415843891894026271>  ' + matched + "'s Portfolio")
+          .setDescription('<:j_dot:1415844475120386230> Here are some of **' + matched + "'s** best works!");
+
+        await message.channel.send({ embeds: [embed] });
+        await message.channel.send({ files: files });
       } catch (e) {
         console.error('Portfolio error:', e);
         message.reply('Error loading portfolio.');
