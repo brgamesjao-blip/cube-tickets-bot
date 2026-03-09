@@ -301,9 +301,12 @@ client.on('messageCreate', async (message) => {
     // !revision — track revision in ticket
     if (cmd === 'revision') {
       if (!message.channel.name.includes('ticket-')) return;
-      // Count how many times !revision was used in this channel
       const msgs = await message.channel.messages.fetch({ limit: 100 });
-      const revCount = msgs.filter(m => m.content.toLowerCase().startsWith('!revision') && !m.author.bot).size;
+      // Find last reset marker
+      const resetMsg = msgs.find(m => m.author.bot && m.embeds.length > 0 && m.embeds[0].description && m.embeds[0].description.includes('[REVISION_RESET]'));
+      const resetTime = resetMsg ? resetMsg.createdTimestamp : 0;
+      // Count revisions after last reset
+      const revCount = msgs.filter(m => m.content.toLowerCase().startsWith('!revision') && !m.author.bot && m.createdTimestamp > resetTime).size;
       const maxRevisions = 3;
       
       if (revCount > maxRevisions) {
@@ -319,21 +322,14 @@ client.on('messageCreate', async (message) => {
       await message.channel.send({ embeds: [revEmbed] });
     }
 
-    // !cleanrevision — reset revision count in ticket
+    // !cleanrevision — reset revision counter in ticket
     if (cmd === 'cleanrevision') {
       if (!message.member.roles.cache.has(ARTIST_ROLE_ID)) return;
       if (!message.channel.name.includes('ticket-')) return message.reply('Use this in a ticket channel.');
       
-      const msgs = await message.channel.messages.fetch({ limit: 100 });
-      const revMsgs = msgs.filter(m => m.author.bot && m.embeds.length > 0 && m.embeds[0].description && m.embeds[0].description.includes('Revision'));
-      
-      for (const [, msg] of revMsgs) {
-        await msg.delete().catch(() => {});
-      }
-      
       const resetEmbed = new EmbedBuilder()
         .setColor(0x22C55E)
-        .setDescription('✅ **Revision count has been reset.**');
+        .setDescription('✅ **Revision count has been reset.** [REVISION_RESET]');
       await message.channel.send({ embeds: [resetEmbed] });
     }
 
@@ -404,7 +400,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   // Designer select
   if (interaction.isStringSelectMenu() && interaction.customId === 'done_designer') {
-    if (!interaction.member.roles.cache.has(ARTIST_ROLE_ID)) return interaction.reply({ content: 'Only artists can use this.', ephemeral: true });
+    if (!interaction.member.roles.cache.has(ARTIST_ROLE_ID)) { await interaction.reply({ content: 'Only artists can use this.', ephemeral: true }); return; }
     if (!form) return interaction.reply({ content: 'Form expired. Run !done again.', ephemeral: true });
     form.designer = interaction.values[0];
     await updateDoneEmbed(interaction, form);
@@ -413,7 +409,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   // Currency select
   if (interaction.isStringSelectMenu() && interaction.customId === 'done_currency') {
-    if (!interaction.member.roles.cache.has(ARTIST_ROLE_ID)) return interaction.reply({ content: 'Only artists can use this.', ephemeral: true });
+    if (!interaction.member.roles.cache.has(ARTIST_ROLE_ID)) { await interaction.reply({ content: 'Only artists can use this.', ephemeral: true }); return; }
     if (!form) return interaction.reply({ content: 'Form expired. Run !done again.', ephemeral: true });
     form.currency = interaction.values[0];
     await updateDoneEmbed(interaction, form);
@@ -422,7 +418,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   // Details button — opens modal
   if (interaction.isButton() && interaction.customId === 'done_details') {
-    if (!interaction.member.roles.cache.has(ARTIST_ROLE_ID)) return interaction.reply({ content: 'Only artists can use this.', ephemeral: true });
+    if (!interaction.member.roles.cache.has(ARTIST_ROLE_ID)) { await interaction.reply({ content: 'Only artists can use this.', ephemeral: true }); return; }
     const modal = new ModalBuilder()
       .setCustomId('done_modal')
       .setTitle('Order Details');
@@ -461,7 +457,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   // Confirm button
   if (interaction.isButton() && interaction.customId === 'done_confirm') {
-    if (!interaction.member.roles.cache.has(ARTIST_ROLE_ID)) return interaction.reply({ content: 'Only artists can use this.', ephemeral: true });
+    if (!interaction.member.roles.cache.has(ARTIST_ROLE_ID)) { await interaction.reply({ content: 'Only artists can use this.', ephemeral: true }); return; }
     if (!form) return interaction.reply({ content: 'Form expired.', ephemeral: true });
     if (!form.designer || !form.currency || !form.description || !form.price) {
       return interaction.reply({ content: 'Please fill all fields first!', ephemeral: true });
@@ -509,7 +505,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   // Cancel button
   if (interaction.isButton() && interaction.customId === 'done_cancel') {
-    if (!interaction.member.roles.cache.has(ARTIST_ROLE_ID)) return interaction.reply({ content: 'Only artists can use this.', ephemeral: true });
+    if (!interaction.member.roles.cache.has(ARTIST_ROLE_ID)) { await interaction.reply({ content: 'Only artists can use this.', ephemeral: true }); return; }
     pendingDone.delete(channelId);
     await interaction.update({
       embeds: [new EmbedBuilder().setTitle('Cancelled').setColor(0xEF4444).setDescription('Order completion cancelled.')],
