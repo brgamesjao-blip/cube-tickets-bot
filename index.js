@@ -14,7 +14,7 @@ const ARTIST_ROLE_ID = '1095427320682119379';
 const revisionCounts = new Map();
 const TICKET_CATEGORY_NAME = 'TICKETS';
 const WORKER_URL = 'https://cube-api.brgamesjao.workers.dev';
-const ADMIN_PW = 'CubeGraphics';
+const ADMIN_PW = 'CubeBot_S3cur3_K3y_2024';
 
 const DESIGNERS = ['Lyus', 'Juan', 'Soda', 'Nosher', 'Sueco', 'Sak', 'Thz'];
 
