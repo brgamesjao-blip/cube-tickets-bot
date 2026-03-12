@@ -10,6 +10,15 @@ const client = new Client({
   ]
 });
 
+
+function isTicketChannel(channel) {
+  // Check by name
+  if (channel.name && channel.name.includes('ticket-')) return true;
+  // Check by category
+  if (channel.parent && channel.parent.name && channel.parent.name.toUpperCase() === TICKET_CATEGORY_NAME) return true;
+  return false;
+}
+
 const ARTIST_ROLE_ID = '1095427320682119379';
 const revisionCounts = new Map();
 const TICKET_CATEGORY_NAME = 'TICKETS';
@@ -72,7 +81,7 @@ client.on('messageCreate', async (message) => {
 
     // !done — start completion form
     if (cmd === 'done') {
-      if (!message.channel.name.startsWith('ticket-')) {
+      if (!isTicketChannel(message.channel)) {
         return message.reply('This command only works in ticket channels.');
       }
 
@@ -277,7 +286,7 @@ client.on('messageCreate', async (message) => {
     // !rush — mark ticket as rush
     if (cmd === 'rush') {
       if (!message.member.roles.cache.has(ARTIST_ROLE_ID)) return;
-      if (!message.channel.name.startsWith('ticket-')) return message.reply('Use this in a ticket channel.');
+      if (!isTicketChannel(message.channel)) return message.reply('Use this in a ticket channel.');
       const name = message.channel.name;
       if (name.startsWith('⚠️')) return message.reply('This ticket is already marked as rush.');
       await message.channel.setName('⚠️' + name).catch(() => {});
@@ -301,7 +310,7 @@ client.on('messageCreate', async (message) => {
 
     // !revision — track revision in ticket
     if (cmd === 'revision') {
-      if (!message.channel.name.includes('ticket-')) return;
+      if (!isTicketChannel(message.channel)) return;
       const chId = message.channel.id;
       const current = revisionCounts.get(chId) || 0;
       const revCount = current + 1;
@@ -324,7 +333,7 @@ client.on('messageCreate', async (message) => {
     // !cleanrevision — reset revision counter in ticket
     if (cmd === 'cleanrevision') {
       if (!message.member.roles.cache.has(ARTIST_ROLE_ID)) return;
-      if (!message.channel.name.includes('ticket-')) return message.reply('Use this in a ticket channel.');
+      if (!isTicketChannel(message.channel)) return message.reply('Use this in a ticket channel.');
       
       revisionCounts.set(message.channel.id, 0);
       
@@ -336,7 +345,7 @@ client.on('messageCreate', async (message) => {
 
     // !close — close ticket
     if (cmd === 'close') {
-      if (message.channel.name.startsWith('ticket-')) {
+      if (isTicketChannel(message.channel)) {
         const embed = new EmbedBuilder()
           .setTitle('Ticket Closing')
           .setDescription('This ticket will be deleted in 5 seconds.')
@@ -663,7 +672,7 @@ async function sendReminder() {
       if (!channel) { console.log('No reminder channel found'); continue; }
 
       // Count open tickets
-      const tickets = guild.channels.cache.filter(c => c.name.startsWith('ticket-') && c.type === ChannelType.GuildText);
+      const tickets = guild.channels.cache.filter(c => (c.name.includes('ticket-') || (c.parent && c.parent.name && c.parent.name.toUpperCase() === TICKET_CATEGORY_NAME)) && c.type === ChannelType.GuildText);
       const ticketCount = tickets.size;
 
       const greetings = [
@@ -719,7 +728,7 @@ async function addToCheckinQueue(username) {
 }
 
 client.on('channelDelete', async (channel) => {
-  if (channel.name && channel.name.startsWith('ticket-')) {
+  if (channel.name && (channel.name.includes('ticket-') || (channel.parent && channel.parent.name && channel.parent.name.toUpperCase() === TICKET_CATEGORY_NAME))) {
     const username = channel.name.replace('ticket-', '');
     await addToCheckinQueue(username);
   }
