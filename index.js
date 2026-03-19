@@ -85,7 +85,7 @@ client.on('messageCreate', async (message) => {
         return message.reply('This command only works in ticket channels.');
       }
 
-      const clientName = message.channel.name.replace('ticket-', '');
+      const clientName = message.channel.name.replace(/.*ticket-/, '').replace(/[^a-z0-9_]/gi, '');
 
       // Designer select menu
       const designerSelect = new StringSelectMenuBuilder()
@@ -729,7 +729,7 @@ async function addToCheckinQueue(username) {
 
 client.on('channelDelete', async (channel) => {
   if (channel.name && (channel.name.includes('ticket-') || (channel.parent && channel.parent.name && channel.parent.name.toUpperCase() === TICKET_CATEGORY_NAME))) {
-    const username = channel.name.replace('ticket-', '');
+    const username = channel.name.replace(/.*ticket-/, '').replace(/[^a-z0-9_]/gi, '');
     await addToCheckinQueue(username);
   }
 });
