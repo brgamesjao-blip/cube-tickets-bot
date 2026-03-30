@@ -25,7 +25,7 @@ const TICKET_CATEGORY_NAME = 'TICKETS';
 const WORKER_URL = 'https://cube-api.brgamesjao.workers.dev';
 const ADMIN_PW = 'CubeBot_S3cur3_K3y_2024';
 
-const DESIGNERS = ['Lyus', 'Juan', 'Soda', 'Nosher', 'Sueco', 'Sak', 'Thz', 'Will', 'Trispil'];
+const DESIGNERS = ['Lyus', 'Juan', 'Soda', 'Nosher', 'Sueco', 'Sak', 'Thz', 'Will', 'Trispil', 'Zudtrix'];
 
 const pendingOrders = new Map();
 const pendingDone = new Map(); // stores !done form data temporarily
