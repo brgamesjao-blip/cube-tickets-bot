@@ -183,18 +183,20 @@ function priorityDotForDeadline(deadlineMs) {
   return '🟢';
 }
 
-// Pick out every <@id> mention inside a free-text string. Used by
-// /redirect /addticket /removeticket since those take a single
-// "users" string option (slash commands don't support User arrays).
-function parseMentionIds(text) {
-  if (!text) return [];
-  const ids = [];
-  const re = /<@!?(\d+)>/g;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    if (!ids.includes(m[1])) ids.push(m[1]);
+// Read up to 5 User options off an interaction and return them as
+// a deduplicated array. Slash commands don't support User arrays,
+// so /redirect /addticket /removeticket /ticket each declare
+// designer1/designer2/... as separate optional User options. This
+// helper collapses them back into a single list.
+function collectUserOptions(interaction, baseName, max = 5) {
+  const users = [];
+  for (let i = 1; i <= max; i++) {
+    const u = interaction.options.getUser(baseName + i);
+    if (!u) continue;
+    if (users.find((x) => x.id === u.id)) continue;
+    users.push(u);
   }
-  return ids;
+  return users;
 }
 
 // Natural-language deadline parser. Tries Portuguese chrono first
@@ -546,13 +548,17 @@ const slashCommands = [
         .setDescription('Client the ticket is for')
         .setRequired(true),
     )
-    .addStringOption((opt) =>
-      opt
-        .setName('designers')
-        .setDescription(
-          'Optional: mention designer(s) to add (e.g. "@user1 @user2")',
-        )
-        .setRequired(false),
+    .addUserOption((opt) =>
+      opt.setName('designer1').setDescription('Designer #1').setRequired(false),
+    )
+    .addUserOption((opt) =>
+      opt.setName('designer2').setDescription('Designer #2').setRequired(false),
+    )
+    .addUserOption((opt) =>
+      opt.setName('designer3').setDescription('Designer #3').setRequired(false),
+    )
+    .addUserOption((opt) =>
+      opt.setName('designer4').setDescription('Designer #4').setRequired(false),
     )
     .toJSON(),
 
@@ -564,35 +570,62 @@ const slashCommands = [
   new SlashCommandBuilder()
     .setName('redirect')
     .setDescription(
-      "Inside a talk: spin up a TICKETS-category channel for this client + chosen designer(s)",
+      'Inside a talk: spin up a TICKETS-category channel for this client + chosen designer(s)',
     )
-    .addStringOption((opt) =>
-      opt
-        .setName('designers')
-        .setDescription('Mention the designer(s), e.g. "@user1 @user2"')
-        .setRequired(true),
+    .addUserOption((opt) =>
+      opt.setName('designer1').setDescription('Designer #1').setRequired(true),
+    )
+    .addUserOption((opt) =>
+      opt.setName('designer2').setDescription('Designer #2').setRequired(false),
+    )
+    .addUserOption((opt) =>
+      opt.setName('designer3').setDescription('Designer #3').setRequired(false),
+    )
+    .addUserOption((opt) =>
+      opt.setName('designer4').setDescription('Designer #4').setRequired(false),
+    )
+    .addUserOption((opt) =>
+      opt.setName('designer5').setDescription('Designer #5').setRequired(false),
     )
     .toJSON(),
 
   new SlashCommandBuilder()
     .setName('addticket')
     .setDescription('Add user(s) to the current ticket')
-    .addStringOption((opt) =>
-      opt
-        .setName('users')
-        .setDescription('Mention the user(s), e.g. "@user1 @user2"')
-        .setRequired(true),
+    .addUserOption((opt) =>
+      opt.setName('user1').setDescription('User #1').setRequired(true),
+    )
+    .addUserOption((opt) =>
+      opt.setName('user2').setDescription('User #2').setRequired(false),
+    )
+    .addUserOption((opt) =>
+      opt.setName('user3').setDescription('User #3').setRequired(false),
+    )
+    .addUserOption((opt) =>
+      opt.setName('user4').setDescription('User #4').setRequired(false),
+    )
+    .addUserOption((opt) =>
+      opt.setName('user5').setDescription('User #5').setRequired(false),
     )
     .toJSON(),
 
   new SlashCommandBuilder()
     .setName('removeticket')
     .setDescription("Remove user(s) from the current ticket")
-    .addStringOption((opt) =>
-      opt
-        .setName('users')
-        .setDescription('Mention the user(s), e.g. "@user1 @user2"')
-        .setRequired(true),
+    .addUserOption((opt) =>
+      opt.setName('user1').setDescription('User #1').setRequired(true),
+    )
+    .addUserOption((opt) =>
+      opt.setName('user2').setDescription('User #2').setRequired(false),
+    )
+    .addUserOption((opt) =>
+      opt.setName('user3').setDescription('User #3').setRequired(false),
+    )
+    .addUserOption((opt) =>
+      opt.setName('user4').setDescription('User #4').setRequired(false),
+    )
+    .addUserOption((opt) =>
+      opt.setName('user5').setDescription('User #5').setRequired(false),
     )
     .toJSON(),
 
@@ -863,18 +896,15 @@ async function cmdTicket(interaction) {
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  // Optional designer mentions — admin can pre-assign designers if
-  // they already know who's working it. Empty list is fine; founder/
-  // staff get the welcome ping in that case.
-  const designersStr = interaction.options.getString('designers');
+  // Optional designer slots (designer1-designer4) — admin can pre-
+  // assign designers if they already know who's working it. Empty
+  // list is fine; founder/staff get the welcome ping in that case.
+  const designerUsers = collectUserOptions(interaction, 'designer', 4);
   const designerMembers = [];
-  if (designersStr) {
-    const ids = parseMentionIds(designersStr);
-    for (const id of ids) {
-      if (id === member.id || id === client.user.id) continue;
-      const m = await interaction.guild.members.fetch(id).catch(() => null);
-      if (m) designerMembers.push(m);
-    }
+  for (const u of designerUsers) {
+    if (u.id === member.id || u.id === client.user.id) continue;
+    const m = await interaction.guild.members.fetch(u.id).catch(() => null);
+    if (m) designerMembers.push(m);
   }
 
   const channel = await createOrderTicket(
@@ -932,12 +962,10 @@ async function cmdRedirect(interaction) {
     });
   }
 
-  const designersStr = interaction.options.getString('designers');
-  const ids = parseMentionIds(designersStr);
-  if (ids.length === 0) {
+  const designerUsers = collectUserOptions(interaction, 'designer', 5);
+  if (designerUsers.length === 0) {
     return interaction.reply({
-      content:
-        'Mention at least one designer in the `designers` field, e.g. `@user1 @user2`.',
+      content: 'Pick at least one designer.',
       flags: MessageFlags.Ephemeral,
     });
   }
@@ -962,15 +990,15 @@ async function cmdRedirect(interaction) {
   }
 
   const designerMembers = [];
-  for (const id of ids) {
-    if (id === clientMember.id || id === client.user.id) continue;
-    const m = await interaction.guild.members.fetch(id).catch(() => null);
+  for (const u of designerUsers) {
+    if (u.id === clientMember.id || u.id === client.user.id) continue;
+    const m = await interaction.guild.members.fetch(u.id).catch(() => null);
     if (m) designerMembers.push(m);
   }
   if (designerMembers.length === 0) {
     return interaction.editReply({
       content:
-        'None of the mentioned users were valid designers (they must be in the server).',
+        'None of the picked designers were valid (they must be in this server, and not the client or the bot).',
     });
   }
 
@@ -1020,10 +1048,10 @@ async function cmdAddTicket(interaction) {
       flags: MessageFlags.Ephemeral,
     });
   }
-  const ids = parseMentionIds(interaction.options.getString('users'));
-  if (ids.length === 0) {
+  const users = collectUserOptions(interaction, 'user', 5);
+  if (users.length === 0) {
     return interaction.reply({
-      content: 'Mention at least one user.',
+      content: 'Pick at least one user.',
       flags: MessageFlags.Ephemeral,
     });
   }
@@ -1031,16 +1059,16 @@ async function cmdAddTicket(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   const added = [];
-  for (const id of ids) {
+  for (const u of users) {
     try {
-      await interaction.channel.permissionOverwrites.edit(id, {
+      await interaction.channel.permissionOverwrites.edit(u.id, {
         ViewChannel: true,
         SendMessages: true,
         ReadMessageHistory: true,
       });
-      added.push('<@' + id + '>');
+      added.push('<@' + u.id + '>');
     } catch (e) {
-      console.error('addticket failed for', id, e?.message);
+      console.error('addticket failed for', u.id, e?.message);
     }
   }
   if (added.length === 0) {
@@ -1074,10 +1102,10 @@ async function cmdRemoveTicket(interaction) {
       flags: MessageFlags.Ephemeral,
     });
   }
-  const ids = parseMentionIds(interaction.options.getString('users'));
-  if (ids.length === 0) {
+  const users = collectUserOptions(interaction, 'user', 5);
+  if (users.length === 0) {
     return interaction.reply({
-      content: 'Mention at least one user.',
+      content: 'Pick at least one user.',
       flags: MessageFlags.Ephemeral,
     });
   }
@@ -1088,29 +1116,29 @@ async function cmdRemoveTicket(interaction) {
   const removed = [];
   const skipped = [];
 
-  for (const id of ids) {
-    if (id === client.user.id) {
-      skipped.push('<@' + id + '> (bot)');
+  for (const u of users) {
+    if (u.id === client.user.id) {
+      skipped.push('<@' + u.id + '> (bot)');
       continue;
     }
-    if (id === ownerId) {
-      skipped.push('<@' + id + '> (ticket owner)');
+    if (u.id === ownerId) {
+      skipped.push('<@' + u.id + '> (ticket owner)');
       continue;
     }
-    const m = await interaction.guild.members.fetch(id).catch(() => null);
+    const m = await interaction.guild.members.fetch(u.id).catch(() => null);
     if (m && m.roles.cache.has(FOUNDER_ROLE_ID)) {
-      skipped.push('<@' + id + '> (founder)');
+      skipped.push('<@' + u.id + '> (founder)');
       continue;
     }
     if (m && m.roles.cache.has(STAFF_ROLE_ID)) {
-      skipped.push('<@' + id + '> (staff)');
+      skipped.push('<@' + u.id + '> (staff)');
       continue;
     }
     try {
-      await interaction.channel.permissionOverwrites.delete(id);
-      removed.push('<@' + id + '>');
+      await interaction.channel.permissionOverwrites.delete(u.id);
+      removed.push('<@' + u.id + '>');
     } catch (e) {
-      console.error('removeticket failed for', id, e?.message);
+      console.error('removeticket failed for', u.id, e?.message);
     }
   }
 
@@ -1552,11 +1580,11 @@ async function cmdHelp(interaction) {
         '<:j_dot:1415844475120386230> `/deadlines` — Show your (or someone else\'s) active deadlines · works in DMs too\n\n' +
         '**Founder / Staff / Admin**\n' +
         '<:j_dot:1415844475120386230> `/ordermsg` — Post the order banner with the Open-a-Ticket button (admin only)\n' +
-        '<:j_dot:1415844475120386230> `/ticket user: [designers:]` — Manually open a TICKETS-category project ticket (designers optional)\n' +
+        '<:j_dot:1415844475120386230> `/ticket user: [designer1: ...]` — Manually open a TICKETS-category project ticket (up to 4 designers optional)\n' +
         '<:j_dot:1415844475120386230> `/audit user:` — Open an AUDITS ticket · auto-adds the RTG team\n' +
-        '<:j_dot:1415844475120386230> `/redirect designers:` — Spin up a TICKETS channel from a talk\n' +
-        '<:j_dot:1415844475120386230> `/addticket users:` — Add user(s) to the current ticket\n' +
-        '<:j_dot:1415844475120386230> `/removeticket users:` — Revoke user(s) from the current ticket\n' +
+        '<:j_dot:1415844475120386230> `/redirect designer1: [designer2: ...]` — Spin up a TICKETS channel from a talk (up to 5 designers)\n' +
+        '<:j_dot:1415844475120386230> `/addticket user1: [user2: ...]` — Add up to 5 users to the current ticket\n' +
+        '<:j_dot:1415844475120386230> `/removeticket user1: [user2: ...]` — Revoke up to 5 users from the current ticket\n' +
         '<:j_dot:1415844475120386230> `/dueby when:` — Set / show / clear the deadline (e.g. `2 days`, `tomorrow`, `clear`)',
     )
     .setFooter({ text: 'Tip: /sample and /deadlines also work in DMs and group DMs.' })
