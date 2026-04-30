@@ -45,9 +45,13 @@ const client = new Client({
 
 const FOUNDER_ROLE_ID = '1095002049713807390';
 const STAFF_ROLE_ID = '1459610315863101735';
+// RTG (game-audit team). Every member with this role is auto-added
+// to a /audit ticket when one is created.
+const RTG_ROLE_ID = '1192095351876894740';
 
 const TALK_CATEGORY_NAME = 'TALK';
 const TICKET_CATEGORY_NAME = 'TICKETS';
+const AUDIT_CATEGORY_NAME = 'AUDITS';
 
 // Priority dot emojis prefixed onto the channel name based on how
 // many days are left until the deadline. Ordered most-to-least urgent.
@@ -113,8 +117,25 @@ function isOrderChannel(channel) {
   return false;
 }
 
+function isAuditChannel(channel) {
+  if (!channel) return false;
+  if (channel.name && channel.name.includes('audit-')) return true;
+  if (
+    channel.parent &&
+    channel.parent.name &&
+    channel.parent.name.toUpperCase() === AUDIT_CATEGORY_NAME
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function isAnyTicketChannel(channel) {
-  return isTalkChannel(channel) || isOrderChannel(channel);
+  return (
+    isTalkChannel(channel) ||
+    isOrderChannel(channel) ||
+    isAuditChannel(channel)
+  );
 }
 
 function canManage(member) {
@@ -149,14 +170,15 @@ function stripPriorityDots(name) {
 }
 
 // Decide which priority dot a deadline gets right now.
-// 3+ days → green, 2 days → yellow, 1 day or less → red.
+//   ≤1 day  →  🔴  (high — last day or less)
+//   1-3 days → 🟡  (medium — covers "2 days" and the 2-3 day band)
+//   ≥3 days →  🟢  (normal)
 // Returns null when the deadline has already passed.
 function priorityDotForDeadline(deadlineMs) {
   const remaining = deadlineMs - Date.now();
   if (remaining <= 0) return null;
   const days = remaining / (24 * 60 * 60 * 1000);
-  if (days < 1.0) return '🔴';
-  if (days < 2.0) return '🟡';
+  if (days <= 1.0) return '🔴';
   if (days < 3.0) return '🟡';
   return '🟢';
 }
@@ -515,12 +537,22 @@ const slashCommands = [
 
   new SlashCommandBuilder()
     .setName('ticket')
-    .setDescription('Manually open a TALK ticket for a user (founder/staff/admin)')
+    .setDescription(
+      'Manually open a TICKETS-category project ticket for a user',
+    )
     .addUserOption((opt) =>
       opt
         .setName('user')
-        .setDescription('User to open the ticket for')
+        .setDescription('Client the ticket is for')
         .setRequired(true),
+    )
+    .addStringOption((opt) =>
+      opt
+        .setName('designers')
+        .setDescription(
+          'Optional: mention designer(s) to add (e.g. "@user1 @user2")',
+        )
+        .setRequired(false),
     )
     .toJSON(),
 
@@ -595,6 +627,19 @@ const slashCommands = [
         .setName('note')
         .setDescription('Optional note to include with the file')
         .setRequired(false),
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName('audit')
+    .setDescription(
+      'Open a game-audit ticket for a user (RTG team auto-added)',
+    )
+    .addUserOption((opt) =>
+      opt
+        .setName('user')
+        .setDescription('User the audit is for')
+        .setRequired(true),
     )
     .toJSON(),
 
@@ -727,6 +772,8 @@ async function handleSlashCommand(interaction) {
       return cmdDueBy(interaction);
     case 'attach':
       return cmdAttach(interaction);
+    case 'audit':
+      return cmdAudit(interaction);
     case 'sample':
       return cmdSample(interaction);
     case 'deadlines':
@@ -776,7 +823,9 @@ async function cmdOrderMsg(interaction) {
     .setColor(0x3b82f6)
     .setDescription(
       '<:Blue_Ticket:1415843891894026271> **READY TO BOOST YOUR GAME?** <:Blue_Ticket:1415843891894026271>\n\n' +
-        '<:j_dot:1415844475120386230> Open a ticket right here and our team will help you create **stunning thumbnails and icons** for your Roblox game!',
+        '<:j_dot:1415844475120386230> Open a ticket and our team will craft **stunning thumbnails and icons** that beat the algorithm.\n\n' +
+        '<:j_dot:1415844475120386230> Hand-crafted by vetted artists. qPTR-tested. Shipped fast.\n\n' +
+        '[cubegraphics.org](http://cubegraphics.org)',
     );
 
   const row = new ActionRowBuilder().addComponents(
@@ -802,23 +851,48 @@ async function cmdTicket(interaction) {
     });
   }
   const target = interaction.options.getUser('user');
-  const member = await interaction.guild.members.fetch(target.id).catch(() => null);
+  const member = await interaction.guild.members
+    .fetch(target.id)
+    .catch(() => null);
   if (!member) {
     return interaction.reply({
       content: 'User is not in this server.',
       flags: MessageFlags.Ephemeral,
     });
   }
+
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const channel = await createTalkTicket(interaction.guild, member);
+
+  // Optional designer mentions — admin can pre-assign designers if
+  // they already know who's working it. Empty list is fine; founder/
+  // staff get the welcome ping in that case.
+  const designersStr = interaction.options.getString('designers');
+  const designerMembers = [];
+  if (designersStr) {
+    const ids = parseMentionIds(designersStr);
+    for (const id of ids) {
+      if (id === member.id || id === client.user.id) continue;
+      const m = await interaction.guild.members.fetch(id).catch(() => null);
+      if (m) designerMembers.push(m);
+    }
+  }
+
+  const channel = await createOrderTicket(
+    interaction.guild,
+    member,
+    designerMembers,
+  );
   if (channel) {
     return interaction.editReply({
       content:
-        '✅ Talk ticket created for ' +
+        '✅ Project ticket created for ' +
         member.displayName +
         ': <#' +
         channel.id +
-        '>',
+        '>' +
+        (designerMembers.length
+          ? ' (' + designerMembers.length + ' designer(s) attached)'
+          : ''),
     });
   }
   return interaction.editReply({
@@ -1182,6 +1256,12 @@ async function cmdDueBy(interaction) {
   });
 }
 
+// Discord's hard upload ceiling for non-Nitro / non-boosted servers
+// is 25 MB. Bot uploads from the user's URL, so the bot account's
+// own ceiling applies — checking the size up front gives the user a
+// clear error instead of letting the channel.send() fail loudly.
+const ATTACH_MAX_BYTES = 25 * 1024 * 1024;
+
 async function cmdAttach(interaction) {
   if (!isAnyTicketChannel(interaction.channel)) {
     return interaction.reply({
@@ -1196,6 +1276,18 @@ async function cmdAttach(interaction) {
   if (!file) {
     return interaction.reply({
       content: 'No file received.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  if (file.size > ATTACH_MAX_BYTES) {
+    return interaction.reply({
+      content:
+        '❌ File is too big to re-post (' +
+        formatBytes(file.size) +
+        '). Max is ' +
+        formatBytes(ATTACH_MAX_BYTES) +
+        '. Compress it or share a link instead.',
       flags: MessageFlags.Ephemeral,
     });
   }
@@ -1218,14 +1310,22 @@ async function cmdAttach(interaction) {
     .setColor(0x3b82f6)
     .setTimestamp();
 
-  await interaction.channel.send({
-    embeds: [embed],
-    files: [{ attachment: file.url, name: file.name }],
-  });
-
-  await interaction.editReply({
-    content: '✅ File posted.',
-  });
+  try {
+    await interaction.channel.send({
+      embeds: [embed],
+      files: [{ attachment: file.url, name: file.name }],
+    });
+    await interaction.editReply({ content: '✅ File posted.' });
+  } catch (e) {
+    console.error('cmdAttach send failed:', e?.message);
+    await interaction.editReply({
+      content:
+        '❌ Could not post the file. ' +
+        (e?.code === 40005 || /size/i.test(e?.message || '')
+          ? 'Discord rejected it as too large.'
+          : 'Try again, or share a link instead.'),
+    });
+  }
 }
 
 function formatBytes(bytes) {
@@ -1235,6 +1335,43 @@ function formatBytes(bytes) {
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   }
   return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+async function cmdAudit(interaction) {
+  if (!canManage(interaction.member)) {
+    return interaction.reply({
+      content: 'Only founders, staff, or admins can use this command.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const target = interaction.options.getUser('user');
+  const member = await interaction.guild.members
+    .fetch(target.id)
+    .catch(() => null);
+  if (!member) {
+    return interaction.reply({
+      content: 'User is not in this server.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const channel = await createAuditTicket(interaction.guild, member);
+  if (channel) {
+    return interaction.editReply({
+      content:
+        '✅ Audit ticket created for ' +
+        member.displayName +
+        ': <#' +
+        channel.id +
+        '>',
+    });
+  }
+  return interaction.editReply({
+    content: '❌ Could not create the audit ticket.',
+  });
 }
 
 // Designer slug → display label. Slug must match the folder name
@@ -1254,20 +1391,27 @@ async function cmdSample(interaction) {
 
   await interaction.deferReply();
 
-  if (!fs.existsSync(dir)) {
+  let files;
+  try {
+    if (!fs.existsSync(dir)) {
+      return interaction.editReply({
+        content: '❌ No samples folder found for ' + label + '.',
+      });
+    }
+    files = fs
+      .readdirSync(dir)
+      .filter((f) => /\.(png|jpe?g|gif|webp)$/i.test(f))
+      .sort()
+      .map((f) => ({
+        attachment: path.join(dir, f),
+        name: f,
+      }));
+  } catch (e) {
+    console.error('cmdSample readdir failed:', e?.message);
     return interaction.editReply({
-      content: '❌ No samples folder found for ' + label + '.',
+      content: '❌ Could not read ' + label + "'s samples folder.",
     });
   }
-
-  const files = fs
-    .readdirSync(dir)
-    .filter((f) => /\.(png|jpe?g|gif|webp)$/i.test(f))
-    .sort()
-    .map((f) => ({
-      attachment: path.join(dir, f),
-      name: f,
-    }));
 
   if (files.length === 0) {
     return interaction.editReply({
@@ -1289,10 +1433,17 @@ async function cmdSample(interaction) {
     .setColor(0x3b82f6)
     .setTimestamp();
 
-  await interaction.editReply({
-    embeds: [embed],
-    files,
-  });
+  try {
+    await interaction.editReply({
+      embeds: [embed],
+      files,
+    });
+  } catch (e) {
+    console.error('cmdSample editReply failed:', e?.message);
+    await interaction.editReply({
+      content: '❌ Could not upload the samples. Try again in a bit.',
+    });
+  }
 }
 
 async function cmdDeadlines(interaction) {
@@ -1401,7 +1552,8 @@ async function cmdHelp(interaction) {
         '<:j_dot:1415844475120386230> `/deadlines` — Show your (or someone else\'s) active deadlines · works in DMs too\n\n' +
         '**Founder / Staff / Admin**\n' +
         '<:j_dot:1415844475120386230> `/ordermsg` — Post the order banner with the Open-a-Ticket button (admin only)\n' +
-        '<:j_dot:1415844475120386230> `/ticket user:` — Manually open a TALK ticket\n' +
+        '<:j_dot:1415844475120386230> `/ticket user: [designers:]` — Manually open a TICKETS-category project ticket (designers optional)\n' +
+        '<:j_dot:1415844475120386230> `/audit user:` — Open an AUDITS ticket · auto-adds the RTG team\n' +
         '<:j_dot:1415844475120386230> `/redirect designers:` — Spin up a TICKETS channel from a talk\n' +
         '<:j_dot:1415844475120386230> `/addticket users:` — Add user(s) to the current ticket\n' +
         '<:j_dot:1415844475120386230> `/removeticket users:` — Revoke user(s) from the current ticket\n' +
@@ -1539,11 +1691,95 @@ async function createTalkTicket(guild, member) {
         '>',
       embeds: [welcomeEmbed],
       components: [row],
+      allowedMentions: { parse: ['users', 'roles'] },
     });
 
     return ticketChannel;
   } catch (error) {
     console.error('Error creating talk ticket:', error);
+  }
+}
+
+async function createAuditTicket(guild, member) {
+  try {
+    let category = guild.channels.cache.find(
+      (c) =>
+        c.type === ChannelType.GuildCategory &&
+        c.name.toUpperCase() === AUDIT_CATEGORY_NAME,
+    );
+    if (!category) {
+      category = await guild.channels.create({
+        name: AUDIT_CATEGORY_NAME,
+        type: ChannelType.GuildCategory,
+      });
+    }
+
+    const safeName = 'audit-' + safeUsernameSlug(member);
+    const existing = guild.channels.cache.find(
+      (c) => stripPriorityDots(c.name) === safeName,
+    );
+    if (existing) return existing;
+
+    // RTG members get access via the ROLE overwrite — anyone with
+    // the RTG role automatically sees this channel, anyone who
+    // gains the role later auto-gains access, anyone who loses it
+    // auto-loses. Adding individual member overwrites would give
+    // us stale access maps and would also confuse findTicketOwner
+    // (which assumes exactly one Member-type overwrite per ticket).
+    const overwrites = [
+      { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+      { id: member.id, ...TICKET_PERMS },
+      { id: FOUNDER_ROLE_ID, ...TICKET_PERMS },
+      { id: STAFF_ROLE_ID, ...TICKET_PERMS },
+      { id: RTG_ROLE_ID, ...TICKET_PERMS },
+      { id: client.user.id, ...BOT_PERMS },
+    ];
+
+    const auditChannel = await guild.channels.create({
+      name: safeName,
+      type: ChannelType.GuildText,
+      parent: category.id,
+      permissionOverwrites: overwrites,
+    });
+
+    const welcomeEmbed = new EmbedBuilder()
+      .setTitle('Game Audit — ' + member.displayName)
+      .setDescription(
+        'Hey <@' +
+          member.id +
+          '>! This is your **game-audit** ticket.\n\n' +
+          'The RTG team (<@&' +
+          RTG_ROLE_ID +
+          '>) has been pulled in to walk through your game and surface what is killing retention, store presence, icons, and discoverability.\n\n' +
+          'Use `/close` to close this ticket once the audit is complete.',
+      )
+      .setColor(0x8b5cf6)
+      .setTimestamp();
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('close_ticket')
+        .setLabel('Close Ticket')
+        .setStyle(ButtonStyle.Danger)
+        .setEmoji('🔒'),
+    );
+
+    // Pinging the role notifies every RTG member that meets the
+    // server's notification settings — same effect as individually
+    // mentioning them, no fetch needed.
+    await auditChannel.send({
+      content:
+        '<@' + member.id + '> <@&' + RTG_ROLE_ID + '>',
+      embeds: [welcomeEmbed],
+      components: [row],
+      allowedMentions: {
+        parse: ['users', 'roles'],
+      },
+    });
+
+    return auditChannel;
+  } catch (error) {
+    console.error('Error creating audit ticket:', error);
   }
 }
 
@@ -1588,6 +1824,7 @@ async function createOrderTicket(guild, clientMember, designerMembers) {
     const designerMentions = designerMembers
       .map((d) => '<@' + d.id + '>')
       .join(' ');
+    const hasDesigners = designerMembers.length > 0;
 
     const welcomeEmbed = new EmbedBuilder()
       .setTitle('Ticket — ' + clientMember.displayName)
@@ -1595,9 +1832,10 @@ async function createOrderTicket(guild, clientMember, designerMembers) {
         'Hey <@' +
           clientMember.id +
           '>! This is your project ticket.\n\n' +
-          'Working with: ' +
-          designerMentions +
-          '\n\nUse `/close` to close this ticket once the order is delivered.',
+          (hasDesigners
+            ? 'Working with: ' + designerMentions + '\n\n'
+            : 'A designer will be assigned shortly.\n\n') +
+          'Use `/close` to close this ticket once the order is delivered.',
       )
       .setColor(0x3b82f6)
       .setTimestamp();
@@ -1610,10 +1848,24 @@ async function createOrderTicket(guild, clientMember, designerMembers) {
         .setEmoji('🔒'),
     );
 
+    // Ping the client always, plus the designers if any.
+    // Without designers, ping founder/staff so they see they need
+    // to assign someone.
+    const pings = ['<@' + clientMember.id + '>'];
+    if (hasDesigners) {
+      pings.push(designerMentions);
+    } else {
+      pings.push(
+        '<@&' + FOUNDER_ROLE_ID + '>',
+        '<@&' + STAFF_ROLE_ID + '>',
+      );
+    }
+
     await ticketChannel.send({
-      content: '<@' + clientMember.id + '> ' + designerMentions,
+      content: pings.join(' '),
       embeds: [welcomeEmbed],
       components: [row],
+      allowedMentions: { parse: ['users', 'roles'] },
     });
 
     return ticketChannel;
