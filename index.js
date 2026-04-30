@@ -469,13 +469,94 @@ async function ensurePaymentsChannel(guild) {
 
 // Append a transaction record to #payments-log AND update the
 // in-memory ledger so /payments stays consistent immediately.
+//
+// On the wire we send a pretty embed humans can read at a glance,
+// AND the canonical JSON tucked into the embed footer for the bot
+// to parse back on the next rebuild. Footer text is rendered small
+// and grey so it doesn't crowd the readable fields.
 async function logTransaction(guild, tx) {
   const channel = await ensurePaymentsChannel(guild);
-  const json = JSON.stringify(tx);
-  // Wrap in a fenced code block so we can parse it back later
-  // without confusion if anyone types in the channel.
-  await channel.send('```json\n' + json + '\n```');
+  const embed = buildTransactionEmbed(tx);
+  await channel.send({ embeds: [embed] });
   applyTransactionToLedger(tx);
+}
+
+function buildTransactionEmbed(tx) {
+  const embed = new EmbedBuilder()
+    .setTimestamp(tx.timestamp || Date.now())
+    .setFooter({ text: 'tx:' + JSON.stringify(tx) });
+
+  if (tx.type === 'delivery') {
+    const amountStr =
+      tx.currency === 'ROBUX' ? formatRobux(tx.amount) : formatUSD(tx.amount);
+    embed
+      .setColor(0x22c55e)
+      .setAuthor({ name: '💼 Delivery logged' })
+      .setDescription(
+        '<@' +
+          tx.designer +
+          '> delivered **' +
+          amountStr +
+          '** of work on `' +
+          (tx.ticketName || tx.ticket) +
+          '`' +
+          (tx.client && tx.client !== 'unknown'
+            ? ' for <@' + tx.client + '>'
+            : ''),
+      )
+      .addFields(
+        {
+          name: 'Designer',
+          value: '<@' + tx.designer + '>',
+          inline: true,
+        },
+        {
+          name: 'Client',
+          value:
+            tx.client && tx.client !== 'unknown'
+              ? '<@' + tx.client + '>'
+              : '*unknown*',
+          inline: true,
+        },
+        {
+          name: 'Amount',
+          value: amountStr,
+          inline: true,
+        },
+      );
+  } else if (tx.type === 'payout') {
+    const parts = [];
+    if (tx.robux > 0) parts.push(formatRobux(tx.robux));
+    if (tx.usd > 0) parts.push(formatUSD(tx.usd));
+    embed
+      .setColor(0xf59e0b)
+      .setAuthor({ name: '💸 Payout' })
+      .setDescription(
+        'Settled **' +
+          (parts.join(' + ') || '0') +
+          '** to <@' +
+          tx.designer +
+          '>.',
+      )
+      .addFields(
+        {
+          name: 'Designer',
+          value: '<@' + tx.designer + '>',
+          inline: true,
+        },
+        {
+          name: 'Robux',
+          value: tx.robux > 0 ? formatRobux(tx.robux) : '—',
+          inline: true,
+        },
+        {
+          name: 'USD',
+          value: tx.usd > 0 ? formatUSD(tx.usd) : '—',
+          inline: true,
+        },
+      );
+  }
+  return embed;
 }
 
 // Read the entire history of #payments-log on startup and rebuild
@@ -497,6 +578,21 @@ async function rebuildPaymentsLedger() {
         });
       if (!fetched || fetched.size === 0) break;
       for (const msg of fetched.values()) {
+        // Newer messages: pretty embed with canonical JSON stashed
+        // in the footer ("tx:{...}").
+        if (msg.embeds.length > 0) {
+          const footer = msg.embeds[0]?.footer?.text || '';
+          if (footer.startsWith('tx:')) {
+            try {
+              txList.push(JSON.parse(footer.slice(3)));
+              continue;
+            } catch (e) {
+              console.error('Bad JSON in embed footer:', e?.message);
+            }
+          }
+        }
+        // Backward compat: legacy messages were a fenced ```json
+        // code block in the message content.
         const m = msg.content.match(/```json\s*([\s\S]+?)\s*```/);
         if (!m) continue;
         try {
