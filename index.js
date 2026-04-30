@@ -1206,7 +1206,17 @@ async function cmdDueBy(interaction) {
 
   // No argument → show current deadline (or "no deadline set").
   if (!raw || raw.trim() === '') {
-    const ts = dueByMap.get(interaction.channel.id);
+    // Read from in-memory map first; if the bot restarted recently
+    // and the rebuild missed this channel, fall back to the topic
+    // and patch the map on the fly.
+    let ts = dueByMap.get(interaction.channel.id);
+    if (!ts) {
+      ts = readDueByFromTopic(interaction.channel);
+      if (ts && ts > Date.now()) {
+        dueByMap.set(interaction.channel.id, ts);
+        scheduleDueByExpiry(interaction.channel.id, ts);
+      }
+    }
     if (!ts || ts <= Date.now()) {
       return interaction.reply({
         embeds: [
@@ -1249,7 +1259,13 @@ async function cmdDueBy(interaction) {
     trimmed === 'off' ||
     trimmed === 'none'
   ) {
-    if (!dueByMap.has(interaction.channel.id)) {
+    // Be idempotent: even if dueByMap doesn't have an entry (bot
+    // just restarted, deadline lived only in the channel topic, etc),
+    // clearChannelDueby still strips the topic + dot. Read from
+    // either source so the response stays accurate.
+    const hadInMap = dueByMap.has(interaction.channel.id);
+    const hadInTopic = readDueByFromTopic(interaction.channel) != null;
+    if (!hadInMap && !hadInTopic) {
       return interaction.reply({
         content: 'There is no deadline set on this ticket.',
         flags: MessageFlags.Ephemeral,
