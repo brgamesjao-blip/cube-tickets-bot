@@ -277,23 +277,25 @@ function parseDeadline(input) {
 // bot scans every TICKETS channel on startup, rebuilds dueByMap from
 // those topics, and re-schedules the per-channel expiry timeouts.
 
+// IMPORTANT: BOTH setTopic AND setName are background-only here.
+// discord.js queues rate-limited REST calls indefinitely, so an
+// awaited setTopic can hang the slash-command interaction past
+// Discord's 15-minute follow-up window — user sees "thinking…"
+// forever. Instead: mutate the in-memory state synchronously,
+// reply right away, and let the channel-edit calls retry on their
+// own. They're idempotent enough that a failed call gets corrected
+// on the next 6am pass.
 async function setChannelDueby(channel, deadlineMs) {
-  // Preserve any other tags in the topic (none today, but future-
-  // proof) by replacing or appending the dueby key only.
   const currentTopic = channel.topic || '';
   const stripped = currentTopic.replace(/dueby:\d+\s*/g, '').trim();
   const newTopic = ('dueby:' + deadlineMs + (stripped ? ' ' + stripped : '')).slice(0, 1024);
-  try {
-    await channel.setTopic(newTopic);
-  } catch (e) {
-    console.error('setChannelDueby topic error:', e);
-  }
+
   dueByMap.set(channel.id, deadlineMs);
   scheduleDueByExpiry(channel.id, deadlineMs);
-  // Channel rename is rate-limited at 2 per 10 minutes — do it in
-  // the background so the slash-command response stays snappy. If
-  // the rename fails we'll catch up on the next 6am pass via
-  // applyPriorityDot inside dailyDueByCheck.
+
+  channel.setTopic(newTopic).catch((e) =>
+    console.error('background setTopic (set) failed:', e?.message),
+  );
   applyPriorityDot(channel, deadlineMs).catch((e) =>
     console.error('background rename (set) failed:', e?.message),
   );
@@ -302,18 +304,16 @@ async function setChannelDueby(channel, deadlineMs) {
 async function clearChannelDueby(channel) {
   const currentTopic = channel.topic || '';
   const stripped = currentTopic.replace(/dueby:\d+\s*/g, '').trim();
-  try {
-    await channel.setTopic(stripped);
-  } catch (e) {
-    console.error('clearChannelDueby topic error:', e);
-  }
+
   dueByMap.delete(channel.id);
   if (dueByTimers.has(channel.id)) {
     clearTimeout(dueByTimers.get(channel.id));
     dueByTimers.delete(channel.id);
   }
-  // Same as set: don't block the response on the rate-limited
-  // channel rename.
+
+  channel.setTopic(stripped).catch((e) =>
+    console.error('background setTopic (clear) failed:', e?.message),
+  );
   removePriorityDot(channel).catch((e) =>
     console.error('background rename (clear) failed:', e?.message),
   );
