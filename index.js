@@ -22,6 +22,8 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
   Events,
   AttachmentBuilder,
   SlashCommandBuilder,
@@ -1093,6 +1095,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await handleDoneModalSubmit(interaction);
     } else if (interaction.customId.startsWith('payments:paid_modal:')) {
       await handlePaymentsModalSubmit(interaction);
+    }
+  }
+
+  if (interaction.isStringSelectMenu()) {
+    if (interaction.customId === 'payments:paid_pick') {
+      await handlePaymentsSelect(interaction);
     }
   }
 });
@@ -2241,14 +2249,18 @@ async function cmdPaymentsView(interaction) {
 }
 
 // Founder-only settlement flow. Roblox gamepass payouts settle 5
-// days after the buyer's purchase, so on payday a chunk of "pending"
-// Robux can still be in transit. Instead of zeroing everything in
-// one click, the founder walks through each designer one at a time
-// and types the AMOUNT they actually paid out (≤ pending). Anything
-// not paid stays on the ledger for next time.
+// days after the buyer's purchase, so on payday a chunk of
+// "pending" Robux can still be in transit. The founder picks a
+// designer from a dropdown, then chooses either:
+//   - "Pay everything" → settles the full pending balance (one click)
+//   - "Pay partial..." → opens a modal with Robux + USD inputs
+//   - "Back" → returns to the designer picker
+// Anything not paid stays on the ledger for next payday.
 //
 // Session state lives in payoutSessions: founderUserId →
-//   { pending: Map<designerId, {robux, usd}>, settled: [{designerId, robux, usd, ts}] }
+//   { settled: [{designerId, robux, usd, ts}], guildId, startedAt }
+// (Pending balances are read live from paymentsLedger so they stay
+// accurate across multiple settlements in the same session.)
 const payoutSessions = new Map();
 
 async function cmdPaymentsPaid(interaction) {
@@ -2263,13 +2275,7 @@ async function cmdPaymentsPaid(interaction) {
     });
   }
 
-  const pending = new Map();
-  for (const [designerId, row] of paymentsLedger.entries()) {
-    if (row.robux > 0 || row.usd > 0) {
-      pending.set(designerId, { robux: row.robux, usd: row.usd });
-    }
-  }
-  if (pending.size === 0) {
+  if (collectPendingDesigners().length === 0) {
     return interaction.reply({
       embeds: [
         new EmbedBuilder()
@@ -2282,47 +2288,65 @@ async function cmdPaymentsPaid(interaction) {
   }
 
   payoutSessions.set(interaction.user.id, {
-    pending,
     settled: [],
     guildId: interaction.guild.id,
     startedAt: Date.now(),
   });
 
   await interaction.reply({
-    embeds: [renderPayoutPanel(interaction.user.id)],
-    components: buildPayoutPanelComponents(interaction.user.id),
+    embeds: [renderPickerEmbed(interaction.user.id)],
+    components: buildPickerComponents(),
     flags: MessageFlags.Ephemeral,
   });
 }
 
-function renderPayoutPanel(founderId) {
+// Snapshot every designer with > 0 pending balance, sorted by USD
+// owed desc + Robux as tiebreaker. Read live from paymentsLedger.
+function collectPendingDesigners() {
+  const out = [];
+  for (const [designerId, row] of paymentsLedger.entries()) {
+    if (row.robux > 0 || row.usd > 0) {
+      out.push({ designerId, robux: row.robux, usd: row.usd, entries: row.entries });
+    }
+  }
+  out.sort((a, b) => b.usd - a.usd || b.robux - a.robux);
+  return out;
+}
+
+// Look up a friendly designer name from the most recent ledger
+// entry that carries one. Used by the picker dropdown labels.
+function resolveDesignerName(designerId) {
+  const row = paymentsLedger.get(designerId);
+  if (!row || !row.entries.length) return designerId;
+  for (let i = row.entries.length - 1; i >= 0; i--) {
+    const e = row.entries[i];
+    if (e.designerName) return e.designerName;
+  }
+  return designerId;
+}
+
+function renderPickerEmbed(founderId) {
   const session = payoutSessions.get(founderId);
-  if (!session) {
-    return new EmbedBuilder()
-      .setTitle('Session expired')
-      .setColor(0x6b7280);
-  }
+  const pending = collectPendingDesigners();
 
-  const pendingLines = [];
-  for (const [designerId, bal] of session.pending.entries()) {
+  const pendingLines = pending.map((p) => {
     const parts = [];
-    if (bal.robux > 0) parts.push(formatRobux(bal.robux));
-    if (bal.usd > 0) parts.push(formatUSD(bal.usd));
-    if (parts.length === 0) continue;
-    pendingLines.push('⏳ <@' + designerId + '> — ' + parts.join(' + '));
-  }
+    if (p.robux > 0) parts.push(formatRobux(p.robux));
+    if (p.usd > 0) parts.push(formatUSD(p.usd));
+    return '⏳ <@' + p.designerId + '> — ' + parts.join(' + ');
+  });
 
-  const settledLines = session.settled.map((s) => {
+  const settledLines = (session?.settled || []).map((s) => {
     const parts = [];
     if (s.robux > 0) parts.push(formatRobux(s.robux));
     if (s.usd > 0) parts.push(formatUSD(s.usd));
     return '✅ <@' + s.designerId + '> — ' + parts.join(' + ');
   });
 
-  const embed = new EmbedBuilder()
+  return new EmbedBuilder()
     .setTitle('💸 Settle payments')
     .setDescription(
-      'Walk through each designer and enter the amount you actually paid. Leave a field empty (or `0`) if that currency is still in transit.\n\nAnything you don\'t enter stays on the ledger for the next payday.',
+      'Pick a designer from the dropdown to settle their balance. You can pay everything in one click, or enter a partial amount if part of it is still in transit (gamepass purchases take 5 days to land in the group).',
     )
     .addFields(
       {
@@ -2340,65 +2364,119 @@ function renderPayoutPanel(founderId) {
     .setFooter({
       text: 'Cube Graphics · payouts run on the 1st of each month',
     });
-
-  return embed;
 }
 
-function buildPayoutPanelComponents(founderId) {
-  const session = payoutSessions.get(founderId);
-  if (!session) return [];
-
-  // Drop fully-settled designers from the picker (anything where
-  // the remaining balance is zero on both currencies).
-  const stillPending = [...session.pending.entries()].filter(
-    ([, bal]) => bal.robux > 0 || bal.usd > 0,
-  );
-
-  if (stillPending.length === 0) {
+function buildPickerComponents() {
+  const pending = collectPendingDesigners();
+  if (pending.length === 0) {
     return [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId('payments:paid_finish')
-          .setLabel('Finish')
+          .setLabel('Done')
           .setStyle(ButtonStyle.Success)
           .setEmoji('🎉'),
       ),
     ];
   }
 
-  // First three designers each get their own button. If there are
-  // more, a "Settle next" button cycles through whoever's left.
-  const row = new ActionRowBuilder();
-  const slice = stillPending.slice(0, 3);
-  for (const [designerId] of slice) {
-    row.addComponents(
-      new ButtonBuilder()
-        .setCustomId('payments:paid_settle:' + designerId)
-        .setLabel('Pay user')
-        .setStyle(ButtonStyle.Primary)
-        .setEmoji('💸'),
+  // Discord caps select-menu options at 25 — well above any
+  // realistic pending list, but slice defensively.
+  const select = new StringSelectMenuBuilder()
+    .setCustomId('payments:paid_pick')
+    .setPlaceholder('Pick a designer to settle…')
+    .addOptions(
+      pending.slice(0, 25).map((p) => {
+        const parts = [];
+        if (p.robux > 0) parts.push(formatRobux(p.robux));
+        if (p.usd > 0) parts.push(formatUSD(p.usd));
+        return new StringSelectMenuOptionBuilder()
+          .setLabel(resolveDesignerName(p.designerId).slice(0, 80))
+          .setDescription((parts.join(' + ') || '—').slice(0, 100))
+          .setValue(p.designerId);
+      }),
     );
-  }
-  // Generic "next" button only adds value when there are more
-  // designers than fit in the panel — at that point label it like
-  // a queue cursor.
-  if (stillPending.length > 3) {
-    row.addComponents(
-      new ButtonBuilder()
-        .setCustomId('payments:paid_settle:' + stillPending[3][0])
-        .setLabel('+' + (stillPending.length - 3) + ' more')
-        .setStyle(ButtonStyle.Secondary),
-    );
-  }
-  row.addComponents(
-    new ButtonBuilder()
-      .setCustomId('payments:paid_finish')
-      .setLabel('Finish')
-      .setStyle(ButtonStyle.Success)
-      .setEmoji('🏁'),
-  );
 
-  return [row];
+  return [
+    new ActionRowBuilder().addComponents(select),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('payments:paid_finish')
+        .setLabel('Done')
+        .setStyle(ButtonStyle.Success)
+        .setEmoji('🏁'),
+    ),
+  ];
+}
+
+function renderDesignerPanel(designerId) {
+  const row = paymentsLedger.get(designerId);
+  const robux = row ? row.robux : 0;
+  const usd = row ? row.usd : 0;
+  const parts = [];
+  if (robux > 0) parts.push('🔵 ' + formatRobux(robux));
+  if (usd > 0) parts.push('💵 ' + formatUSD(usd));
+
+  return new EmbedBuilder()
+    .setTitle('💸 Settle <designer>')
+    .setDescription(
+      'Settling **<@' +
+        designerId +
+        ">**'s balance.\n\n" +
+        '**Pending**\n' +
+        (parts.join('\n') || '*Nothing pending*') +
+        '\n\nUse **Pay everything** to clear it all in one click, or **Pay partial** if part of the money is still in transit.',
+    )
+    .setColor(0xf59e0b);
+}
+
+function buildDesignerPanelComponents(designerId) {
+  const row = paymentsLedger.get(designerId);
+  const hasBalance = row && (row.robux > 0 || row.usd > 0);
+
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('payments:paid_full:' + designerId)
+        .setLabel('Pay everything')
+        .setStyle(ButtonStyle.Success)
+        .setEmoji('✅')
+        .setDisabled(!hasBalance),
+      new ButtonBuilder()
+        .setCustomId('payments:paid_partial:' + designerId)
+        .setLabel('Pay partial…')
+        .setStyle(ButtonStyle.Primary)
+        .setEmoji('💸')
+        .setDisabled(!hasBalance),
+      new ButtonBuilder()
+        .setCustomId('payments:paid_back')
+        .setLabel('Back')
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji('⬅️'),
+    ),
+  ];
+}
+
+async function handlePaymentsSelect(interaction) {
+  if (!interaction.member.roles.cache.has(FOUNDER_ROLE_ID)) {
+    return interaction.reply({
+      content: 'Only founders can settle payments.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+  const session = payoutSessions.get(interaction.user.id);
+  if (!session) {
+    return interaction.reply({
+      content:
+        'Your payout session expired. Run `/payments paid` again.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+  const designerId = interaction.values[0];
+  await interaction.update({
+    embeds: [renderDesignerPanel(designerId)],
+    components: buildDesignerPanelComponents(designerId),
+  });
 }
 
 async function handlePaymentsButton(interaction) {
@@ -2420,9 +2498,9 @@ async function handlePaymentsButton(interaction) {
     return interaction.update({
       embeds: [
         new EmbedBuilder()
-          .setTitle('🎉 Payout session finished')
+          .setTitle('🏁 Payout session finished')
           .setDescription(
-            'All chosen settlements were logged. Run `/payments view <user>` to verify any remaining balances.',
+            'All chosen settlements were logged. Run `/payments view` to verify any remaining balances.',
           )
           .setColor(0x22c55e),
       ],
@@ -2430,14 +2508,29 @@ async function handlePaymentsButton(interaction) {
     });
   }
 
-  if (interaction.customId.startsWith('payments:paid_settle:')) {
+  // Back to the designer picker.
+  if (interaction.customId === 'payments:paid_back') {
+    if (!payoutSessions.has(interaction.user.id)) {
+      return interaction.reply({
+        content:
+          'Your payout session expired. Run `/payments paid` again.',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+    return interaction.update({
+      embeds: [renderPickerEmbed(interaction.user.id)],
+      components: buildPickerComponents(),
+    });
+  }
+
+  // Pay everything (full balance) for one designer in one click.
+  if (interaction.customId.startsWith('payments:paid_full:')) {
     if (!interaction.member.roles.cache.has(FOUNDER_ROLE_ID)) {
       return interaction.reply({
         content: 'Only founders can settle payments.',
         flags: MessageFlags.Ephemeral,
       });
     }
-    const designerId = interaction.customId.split(':')[2];
     const session = payoutSessions.get(interaction.user.id);
     if (!session) {
       return interaction.reply({
@@ -2446,8 +2539,66 @@ async function handlePaymentsButton(interaction) {
         flags: MessageFlags.Ephemeral,
       });
     }
-    const balance = session.pending.get(designerId);
-    if (!balance || (balance.robux === 0 && balance.usd === 0)) {
+    const designerId = interaction.customId.split(':')[2];
+    const row = paymentsLedger.get(designerId);
+    if (!row || (row.robux === 0 && row.usd === 0)) {
+      return interaction.reply({
+        content: 'That designer has no pending balance left.',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+
+    const tx = {
+      type: 'payout',
+      designer: designerId,
+      designerName: resolveDesignerName(designerId),
+      robux: row.robux,
+      usd: row.usd,
+      timestamp: Date.now(),
+    };
+    try {
+      await logTransaction(interaction.guild, tx);
+    } catch (e) {
+      console.error('full payout failed:', e?.message);
+      return interaction.reply({
+        content:
+          '❌ Could not log the payout. Check the bot has access to the payments-log channel.',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+
+    session.settled.push({
+      designerId,
+      robux: tx.robux,
+      usd: tx.usd,
+      ts: Date.now(),
+    });
+
+    return interaction.update({
+      embeds: [renderPickerEmbed(interaction.user.id)],
+      components: buildPickerComponents(),
+    });
+  }
+
+  // Pay partial — open the modal.
+  if (interaction.customId.startsWith('payments:paid_partial:')) {
+    if (!interaction.member.roles.cache.has(FOUNDER_ROLE_ID)) {
+      return interaction.reply({
+        content: 'Only founders can settle payments.',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+    const session = payoutSessions.get(interaction.user.id);
+    if (!session) {
+      return interaction.reply({
+        content:
+          'Your payout session expired. Run `/payments paid` again.',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+    const designerId = interaction.customId.split(':')[2];
+    const row = paymentsLedger.get(designerId);
+    if (!row || (row.robux === 0 && row.usd === 0)) {
       return interaction.reply({
         content: 'That designer has no pending balance left.',
         flags: MessageFlags.Ephemeral,
@@ -2456,16 +2607,20 @@ async function handlePaymentsButton(interaction) {
 
     const modal = new ModalBuilder()
       .setCustomId('payments:paid_modal:' + designerId)
-      .setTitle('Settle <' + designerId + '>'.slice(0, 45));
+      .setTitle(
+        ('Settle ' + resolveDesignerName(designerId)).slice(0, 45),
+      );
 
     const robuxInput = new TextInputBuilder()
       .setCustomId('robux')
       .setLabel(
         'Robux paid (pending: ' +
-          (balance.robux > 0 ? balance.robux.toLocaleString('en-US') : '0') +
+          (row.robux > 0 ? row.robux.toLocaleString('en-US') : '0') +
           ')',
       )
-      .setPlaceholder(balance.robux > 0 ? '0 - ' + balance.robux : '0')
+      .setPlaceholder(
+        row.robux > 0 ? '0 - ' + row.robux : '0',
+      )
       .setStyle(TextInputStyle.Short)
       .setRequired(false)
       .setMaxLength(12);
@@ -2474,10 +2629,10 @@ async function handlePaymentsButton(interaction) {
       .setCustomId('usd')
       .setLabel(
         'USD paid (pending: $' +
-          (balance.usd > 0 ? balance.usd.toFixed(2) : '0.00') +
+          (row.usd > 0 ? row.usd.toFixed(2) : '0.00') +
           ')',
       )
-      .setPlaceholder(balance.usd > 0 ? '0 - ' + balance.usd.toFixed(2) : '0')
+      .setPlaceholder(row.usd > 0 ? '0 - ' + row.usd.toFixed(2) : '0')
       .setStyle(TextInputStyle.Short)
       .setRequired(false)
       .setMaxLength(12);
@@ -2508,13 +2663,18 @@ async function handlePaymentsModalSubmit(interaction) {
       flags: MessageFlags.Ephemeral,
     });
   }
-  const balance = session.pending.get(designerId);
-  if (!balance) {
+  // Read the live balance straight from paymentsLedger so it
+  // reflects any other settlements (or new deliveries) since the
+  // session started.
+  const ledgerRow = paymentsLedger.get(designerId);
+  if (!ledgerRow || (ledgerRow.robux === 0 && ledgerRow.usd === 0)) {
     return interaction.reply({
-      content: 'That designer is not in your current session.',
+      content: 'That designer has no pending balance left.',
       flags: MessageFlags.Ephemeral,
     });
   }
+  const pendingRobux = ledgerRow.robux;
+  const pendingUSD = ledgerRow.usd;
 
   const parseAmount = (raw) => {
     if (!raw) return 0;
@@ -2532,32 +2692,29 @@ async function handlePaymentsModalSubmit(interaction) {
   if (robuxPaid === 0 && usdPaid === 0) {
     return interaction.reply({
       content:
-        '❌ You entered nothing. Type at least one amount, or click Finish to leave the rest pending.',
+        '❌ You entered nothing. Type at least one amount, or click Back to pick another designer.',
       flags: MessageFlags.Ephemeral,
     });
   }
-  if (robuxPaid > balance.robux + 0.0001) {
+  if (robuxPaid > pendingRobux + 0.0001) {
     return interaction.reply({
       content:
         '❌ Robux amount exceeds the pending balance (' +
-        balance.robux.toLocaleString('en-US') +
+        pendingRobux.toLocaleString('en-US') +
         ').',
       flags: MessageFlags.Ephemeral,
     });
   }
-  if (usdPaid > balance.usd + 0.0001) {
+  if (usdPaid > pendingUSD + 0.0001) {
     return interaction.reply({
       content:
         '❌ USD amount exceeds the pending balance ($' +
-        balance.usd.toFixed(2) +
+        pendingUSD.toFixed(2) +
         ').',
       flags: MessageFlags.Ephemeral,
     });
   }
-  if (
-    Math.floor(robuxPaid) !== robuxPaid ||
-    robuxPaid < 0
-  ) {
+  if (Math.floor(robuxPaid) !== robuxPaid || robuxPaid < 0) {
     return interaction.reply({
       content: '❌ Robux must be a non-negative whole number.',
       flags: MessageFlags.Ephemeral,
@@ -2566,24 +2723,10 @@ async function handlePaymentsModalSubmit(interaction) {
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  // Pull a designer name from the existing ledger entries if we have
-  // one stored — fallback to "unknown".
-  const ledgerRow = paymentsLedger.get(designerId);
-  let designerName = 'unknown';
-  if (ledgerRow && ledgerRow.entries.length) {
-    for (let i = ledgerRow.entries.length - 1; i >= 0; i--) {
-      const e = ledgerRow.entries[i];
-      if (e.designerName) {
-        designerName = e.designerName;
-        break;
-      }
-    }
-  }
-
   const tx = {
     type: 'payout',
     designer: designerId,
-    designerName,
+    designerName: resolveDesignerName(designerId),
     robux: robuxPaid,
     usd: usdPaid,
     timestamp: Date.now(),
@@ -2599,12 +2742,6 @@ async function handlePaymentsModalSubmit(interaction) {
     });
   }
 
-  // Update session pending — subtract what was paid.
-  balance.robux = Math.max(0, balance.robux - robuxPaid);
-  balance.usd = Math.max(0, balance.usd - usdPaid);
-  if (balance.robux === 0 && balance.usd === 0) {
-    session.pending.delete(designerId);
-  }
   session.settled.push({
     designerId,
     robux: robuxPaid,
@@ -2612,9 +2749,22 @@ async function handlePaymentsModalSubmit(interaction) {
     ts: Date.now(),
   });
 
+  // Modal submits can't update the original ephemeral message, so
+  // we acknowledge the modal here, then refresh the original
+  // panel via interaction.message if it exists. As a fallback, the
+  // user can click "Back" to manually refresh.
   await interaction.editReply({
-    embeds: [renderPayoutPanel(interaction.user.id)],
-    components: buildPayoutPanelComponents(interaction.user.id),
+    content:
+      '✅ Logged ' +
+      [
+        robuxPaid > 0 ? formatRobux(robuxPaid) : null,
+        usdPaid > 0 ? formatUSD(usdPaid) : null,
+      ]
+        .filter(Boolean)
+        .join(' + ') +
+      ' to <@' +
+      designerId +
+      '>. Open `/payments paid` again or click Back to pick the next designer.',
   });
 }
 
