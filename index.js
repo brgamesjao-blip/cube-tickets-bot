@@ -272,7 +272,13 @@ async function setChannelDueby(channel, deadlineMs) {
   }
   dueByMap.set(channel.id, deadlineMs);
   scheduleDueByExpiry(channel.id, deadlineMs);
-  await applyPriorityDot(channel, deadlineMs);
+  // Channel rename is rate-limited at 2 per 10 minutes — do it in
+  // the background so the slash-command response stays snappy. If
+  // the rename fails we'll catch up on the next 6am pass via
+  // applyPriorityDot inside dailyDueByCheck.
+  applyPriorityDot(channel, deadlineMs).catch((e) =>
+    console.error('background rename (set) failed:', e?.message),
+  );
 }
 
 async function clearChannelDueby(channel) {
@@ -288,7 +294,11 @@ async function clearChannelDueby(channel) {
     clearTimeout(dueByTimers.get(channel.id));
     dueByTimers.delete(channel.id);
   }
-  await removePriorityDot(channel);
+  // Same as set: don't block the response on the rate-limited
+  // channel rename.
+  removePriorityDot(channel).catch((e) =>
+    console.error('background rename (clear) failed:', e?.message),
+  );
 }
 
 function readDueByFromTopic(channel) {
@@ -1227,8 +1237,7 @@ async function cmdDueBy(interaction) {
   ) {
     // Be idempotent: even if dueByMap doesn't have an entry (bot
     // just restarted, deadline lived only in the channel topic, etc),
-    // clearChannelDueby still strips the topic + dot. Read from
-    // either source so the response stays accurate.
+    // clearChannelDueby still strips the topic + dot.
     const hadInMap = dueByMap.has(interaction.channel.id);
     const hadInTopic = readDueByFromTopic(interaction.channel) != null;
     if (!hadInMap && !hadInTopic) {
@@ -1237,8 +1246,14 @@ async function cmdDueBy(interaction) {
         flags: MessageFlags.Ephemeral,
       });
     }
+    // Defer up front — clearChannelDueby calls setTopic + setName,
+    // and Discord's channel-rename rate limit (2 per 10 min) can
+    // stall the second call by minutes. Without a defer, the 3s
+    // interaction window blows up and the user sees "App didn't
+    // respond" even though the work succeeds in the background.
+    await interaction.deferReply();
     await clearChannelDueby(interaction.channel);
-    return interaction.reply({
+    return interaction.editReply({
       embeds: [
         new EmbedBuilder()
           .setTitle('Deadline cleared')
@@ -1269,6 +1284,11 @@ async function cmdDueBy(interaction) {
     });
   }
 
+  // Defer up front — setChannelDueby calls setTopic + setName, and
+  // the channel-rename rate limit (2 per 10 min) can blow past the
+  // 3s interaction window otherwise.
+  await interaction.deferReply();
+
   // Note whether we're replacing an existing deadline so the
   // response embed can reflect "updated" vs "set". setChannelDueby
   // already overrides cleanly — strips the old `dueby:` tag from
@@ -1285,7 +1305,7 @@ async function cmdDueBy(interaction) {
     dot === '🔴' ? 0xef4444 : dot === '🟡' ? 0xf59e0b : 0x22c55e;
   const tsSec = Math.floor(ts / 1000);
 
-  return interaction.reply({
+  return interaction.editReply({
     embeds: [
       new EmbedBuilder()
         .setTitle(dot + (wasSet ? ' Deadline updated' : ' Deadline set'))
