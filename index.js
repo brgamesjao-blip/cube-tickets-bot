@@ -732,9 +732,34 @@ const slashCommands = [
 
 async function registerSlashCommands() {
   try {
+    // If DEV_GUILD_ID is set, register the commands as GUILD
+    // commands on that single guild — guild commands propagate
+    // instantly (no Discord cache delay), so iteration during
+    // development doesn't cost up to an hour each push.
+    // If unset, register GLOBALLY (proper for production).
+    const devGuildId = process.env.DEV_GUILD_ID;
+    if (devGuildId) {
+      const guild = await client.guilds.fetch(devGuildId).catch(() => null);
+      if (guild) {
+        await guild.commands.set(slashCommands);
+        console.log(
+          'Registered ' +
+            slashCommands.length +
+            ' slash commands on guild "' +
+            guild.name +
+            '" (instant; DEV_GUILD_ID set).',
+        );
+        return;
+      }
+      console.warn(
+        'DEV_GUILD_ID set but guild fetch failed — falling through to global registration.',
+      );
+    }
     await client.application.commands.set(slashCommands);
     console.log(
-      'Registered ' + slashCommands.length + ' slash commands globally.',
+      'Registered ' +
+        slashCommands.length +
+        ' slash commands globally (may take up to 1 hour to propagate).',
     );
   } catch (e) {
     console.error('Failed to register slash commands:', e);
