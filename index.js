@@ -28,6 +28,7 @@ const {
 } = require('discord.js');
 const chrono = require('chrono-node');
 const fs = require('fs');
+const path = require('path');
 
 const client = new Client({
   intents: [
@@ -598,6 +599,32 @@ const slashCommands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName('sample')
+    .setDescription("Show a designer's sample work — works in DMs too")
+    .addStringOption((opt) =>
+      opt
+        .setName('designer')
+        .setDescription('Pick a designer')
+        .setRequired(true)
+        .addChoices(
+          { name: 'S0da', value: 's0da' },
+          { name: 'Will', value: 'willian' },
+          { name: 'Nosher', value: 'nosher' },
+          { name: 'Trispil', value: 'trispil' },
+        ),
+    )
+    .setIntegrationTypes(
+      ApplicationIntegrationType.GuildInstall,
+      ApplicationIntegrationType.UserInstall,
+    )
+    .setContexts(
+      InteractionContextType.Guild,
+      InteractionContextType.BotDM,
+      InteractionContextType.PrivateChannel,
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
     .setName('deadlines')
     .setDescription(
       "Show your active deadlines (or someone else's) — works in DMs too",
@@ -700,6 +727,8 @@ async function handleSlashCommand(interaction) {
       return cmdDueBy(interaction);
     case 'attach':
       return cmdAttach(interaction);
+    case 'sample':
+      return cmdSample(interaction);
     case 'deadlines':
       return cmdDeadlines(interaction);
     case 'help':
@@ -1208,6 +1237,64 @@ function formatBytes(bytes) {
   return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
 }
 
+// Designer slug → display label. Slug must match the folder name
+// inside ./samples — both are lowercase. Display label is what
+// users see in the slash command choice picker and the embed title.
+const DESIGNER_LABELS = {
+  s0da: 'S0da',
+  willian: 'Will',
+  nosher: 'Nosher',
+  trispil: 'Trispil',
+};
+
+async function cmdSample(interaction) {
+  const slug = interaction.options.getString('designer');
+  const label = DESIGNER_LABELS[slug] || slug;
+  const dir = path.join(__dirname, 'samples', slug);
+
+  await interaction.deferReply();
+
+  if (!fs.existsSync(dir)) {
+    return interaction.editReply({
+      content: '❌ No samples folder found for ' + label + '.',
+    });
+  }
+
+  const files = fs
+    .readdirSync(dir)
+    .filter((f) => /\.(png|jpe?g|gif|webp)$/i.test(f))
+    .sort()
+    .map((f) => ({
+      attachment: path.join(dir, f),
+      name: f,
+    }));
+
+  if (files.length === 0) {
+    return interaction.editReply({
+      content: "❌ No image files in " + label + "'s folder.",
+    });
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle('🎨  ' + label + ' — Sample work')
+    .setDescription(
+      'Recent thumbnails from **' +
+        label +
+        '**. ' +
+        files.length +
+        ' piece' +
+        (files.length === 1 ? '' : 's') +
+        ' attached.',
+    )
+    .setColor(0x3b82f6)
+    .setTimestamp();
+
+  await interaction.editReply({
+    embeds: [embed],
+    files,
+  });
+}
+
 async function cmdDeadlines(interaction) {
   // Works in DMs / group DMs (User Install context). When not in a
   // guild, interaction.guild is null and we have to scan every guild
@@ -1310,6 +1397,7 @@ async function cmdHelp(interaction) {
         '<:j_dot:1415844475120386230> `/help` — Show this list\n' +
         '<:j_dot:1415844475120386230> `/close` — Close the current ticket (talk OR order)\n' +
         '<:j_dot:1415844475120386230> `/attach` — Drop a file in the ticket via a clean embed\n' +
+        '<:j_dot:1415844475120386230> `/sample` — Show a designer\'s sample work · S0da / Will / Nosher / Trispil · works in DMs too\n' +
         '<:j_dot:1415844475120386230> `/deadlines` — Show your (or someone else\'s) active deadlines · works in DMs too\n\n' +
         '**Founder / Staff / Admin**\n' +
         '<:j_dot:1415844475120386230> `/ordermsg` — Post the order banner with the Open-a-Ticket button (admin only)\n' +
@@ -1319,6 +1407,7 @@ async function cmdHelp(interaction) {
         '<:j_dot:1415844475120386230> `/removeticket users:` — Revoke user(s) from the current ticket\n' +
         '<:j_dot:1415844475120386230> `/dueby when:` — Set / show / clear the deadline (e.g. `2 days`, `tomorrow`, `clear`)',
     )
+    .setFooter({ text: 'Tip: /sample and /deadlines also work in DMs and group DMs.' })
     .setTimestamp();
   return interaction.reply({ embeds: [helpEmbed] });
 }
