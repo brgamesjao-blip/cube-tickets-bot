@@ -19,9 +19,13 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   Events,
   AttachmentBuilder,
   SlashCommandBuilder,
+  SlashCommandSubcommandBuilder,
   ApplicationIntegrationType,
   InteractionContextType,
   MessageFlags,
@@ -53,6 +57,13 @@ const TALK_CATEGORY_NAME = 'TALK';
 const TICKET_CATEGORY_NAME = 'TICKETS';
 const AUDIT_CATEGORY_NAME = 'AUDITS';
 
+// Designer payment ledger lives in this private text channel. The
+// bot creates it on first use (founder/staff/bot only) and writes
+// one message per /done, plus a PAYOUT message per /payments paid.
+// The channel doubles as durable storage: on startup the bot reads
+// its history and replays every transaction into the in-memory map.
+const PAYMENTS_CHANNEL_NAME = 'payments-log';
+
 // Priority dot emojis prefixed onto the channel name based on how
 // many days are left until the deadline. Ordered most-to-least urgent.
 const PRIORITY_DOTS = ['🔴', '🟡', '🟢'];
@@ -82,6 +93,13 @@ const dueByMap = new Map();
 // trigger. Cleared when the deadline is reset, the channel is
 // deleted, or the timeout fires.
 const dueByTimers = new Map();
+
+// Designer payment ledger.
+// Map<designerId, { robux: number, usd: number, entries: Entry[] }>
+// where Entry = { type: 'delivery'|'payout', currency, amount, ticket, ts }
+// Rebuilt on startup from the #payments-log channel; mutated by
+// /done (delivery entries) and /payments paid (payout entries).
+const paymentsLedger = new Map();
 
 // =====================================================================
 // HELPERS
@@ -387,6 +405,128 @@ async function removePriorityDot(channel) {
   }
 }
 
+// =====================================================================
+// PAYMENTS LEDGER — Discord channel as durable storage
+// =====================================================================
+// Schema: each transaction is a single message in #payments-log
+// containing a fenced JSON code block. Two transaction types:
+//   { type:"delivery", designer, designerName, client, clientName,
+//     ticket, ticketName, currency:"USD"|"ROBUX", amount, timestamp }
+//   { type:"payout", designer, designerName, robux, usd, timestamp }
+// On startup we walk the channel history once and replay every entry
+// into paymentsLedger; afterward all writes go to the channel and to
+// the map so they stay in sync.
+
+function getOrCreateLedgerEntry(designerId) {
+  let row = paymentsLedger.get(designerId);
+  if (!row) {
+    row = { robux: 0, usd: 0, entries: [] };
+    paymentsLedger.set(designerId, row);
+  }
+  return row;
+}
+
+function applyTransactionToLedger(tx) {
+  const row = getOrCreateLedgerEntry(tx.designer);
+  if (tx.type === 'delivery') {
+    if (tx.currency === 'ROBUX') row.robux += tx.amount;
+    else if (tx.currency === 'USD') row.usd += tx.amount;
+    row.entries.push(tx);
+  } else if (tx.type === 'payout') {
+    row.robux = Math.max(0, row.robux - (tx.robux || 0));
+    row.usd = Math.max(0, row.usd - (tx.usd || 0));
+    row.entries.push(tx);
+  }
+}
+
+async function findPaymentsChannel(guild) {
+  return (
+    guild.channels.cache.find(
+      (c) =>
+        c.type === ChannelType.GuildText &&
+        c.name === PAYMENTS_CHANNEL_NAME,
+    ) || null
+  );
+}
+
+async function ensurePaymentsChannel(guild) {
+  let channel = await findPaymentsChannel(guild);
+  if (channel) return channel;
+  channel = await guild.channels.create({
+    name: PAYMENTS_CHANNEL_NAME,
+    type: ChannelType.GuildText,
+    topic:
+      'Cube Tickets payments ledger. Bot-managed — do not edit messages here. Each entry is a delivery or payout transaction.',
+    permissionOverwrites: [
+      { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+      { id: FOUNDER_ROLE_ID, ...TICKET_PERMS },
+      { id: STAFF_ROLE_ID, ...TICKET_PERMS },
+      { id: client.user.id, ...BOT_PERMS },
+    ],
+  });
+  return channel;
+}
+
+// Append a transaction record to #payments-log AND update the
+// in-memory ledger so /payments stays consistent immediately.
+async function logTransaction(guild, tx) {
+  const channel = await ensurePaymentsChannel(guild);
+  const json = JSON.stringify(tx);
+  // Wrap in a fenced code block so we can parse it back later
+  // without confusion if anyone types in the channel.
+  await channel.send('```json\n' + json + '\n```');
+  applyTransactionToLedger(tx);
+}
+
+// Read the entire history of #payments-log on startup and rebuild
+// paymentsLedger from scratch. Discord gives us 100 messages per
+// fetch; loop with `before` until we exhaust the history.
+async function rebuildPaymentsLedger() {
+  paymentsLedger.clear();
+  for (const [, guild] of client.guilds.cache) {
+    const channel = await findPaymentsChannel(guild);
+    if (!channel) continue;
+    let before;
+    const txList = [];
+    while (true) {
+      const fetched = await channel.messages
+        .fetch({ limit: 100, before })
+        .catch((e) => {
+          console.error('rebuildPaymentsLedger fetch failed:', e?.message);
+          return null;
+        });
+      if (!fetched || fetched.size === 0) break;
+      for (const msg of fetched.values()) {
+        const m = msg.content.match(/```json\s*([\s\S]+?)\s*```/);
+        if (!m) continue;
+        try {
+          txList.push(JSON.parse(m[1]));
+        } catch (e) {
+          console.error('Bad JSON in payments-log:', e?.message);
+        }
+      }
+      before = fetched.last().id;
+      if (fetched.size < 100) break;
+    }
+    // Replay in chronological order so payouts subtract correctly
+    // from later balances.
+    txList.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    for (const tx of txList) applyTransactionToLedger(tx);
+  }
+  console.log(
+    'Rebuilt paymentsLedger with ' +
+      paymentsLedger.size +
+      ' designer balance(s).',
+  );
+}
+
+function formatRobux(n) {
+  return Math.round(n).toLocaleString('en-US') + ' Robux';
+}
+function formatUSD(n) {
+  return '$' + (Math.round(n * 100) / 100).toFixed(2) + ' USD';
+}
+
 async function rebuildDueByQueue() {
   for (const [, guild] of client.guilds.cache) {
     const channels = guild.channels.cache.filter(
@@ -645,6 +785,36 @@ const slashCommands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName('done')
+    .setDescription(
+      'Log a delivery for the current ticket — opens a price panel',
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName('payments')
+    .setDescription("Show pending payments, or settle them (founder)")
+    .addSubcommand((sub) =>
+      sub
+        .setName('view')
+        .setDescription("Show pending payments for a designer (defaults to you)")
+        .addUserOption((opt) =>
+          opt
+            .setName('user')
+            .setDescription('Designer to check (defaults to you)')
+            .setRequired(false),
+        ),
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('paid')
+        .setDescription(
+          'Settle ALL pending payments — founder only, runs on payday',
+        ),
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
     .setName('load')
     .setDescription(
       "Show how many active deadlines a user is on (defaults to you)",
@@ -783,6 +953,7 @@ client.once('ready', async () => {
 
   await registerSlashCommands();
   await rebuildDueByQueue();
+  await rebuildPaymentsLedger();
   scheduleNext6am();
 });
 
@@ -814,6 +985,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await handleOpenTicketButton(interaction);
     } else if (interaction.customId === 'close_ticket') {
       await handleCloseTicketButton(interaction);
+    } else if (interaction.customId.startsWith('done:')) {
+      await handleDoneButton(interaction);
+    } else if (interaction.customId.startsWith('payments:')) {
+      await handlePaymentsButton(interaction);
+    }
+  }
+
+  if (interaction.isModalSubmit()) {
+    if (interaction.customId.startsWith('done:submit:')) {
+      await handleDoneModalSubmit(interaction);
     }
   }
 });
@@ -837,6 +1018,10 @@ async function handleSlashCommand(interaction) {
       return cmdDueBy(interaction);
     case 'attach':
       return cmdAttach(interaction);
+    case 'done':
+      return cmdDone(interaction);
+    case 'payments':
+      return cmdPayments(interaction);
     case 'load':
       return cmdLoad(interaction);
     case 'reminder':
@@ -1550,6 +1735,481 @@ async function cmdLoad(interaction) {
   return interaction.editReply({ embeds: [embed] });
 }
 
+// =====================================================================
+// /done — designer logs a delivery for the current ticket
+// =====================================================================
+// Flow:
+//   1. Designer types /done in a TICKETS channel.
+//   2. Bot replies with an ephemeral panel: 🔵 Robux | 💵 USD | ❌
+//   3. Designer clicks a currency button — bot opens a modal with
+//      a single number input.
+//   4. Modal submit — bot validates, builds a `delivery` transaction
+//      (with the channel's owner attached as the client), appends it
+//      to #payments-log AND mutates paymentsLedger, then confirms
+//      back in the original ephemeral panel.
+//
+// Custom-id schema (must round-trip across handlers):
+//   done:cancel
+//   done:pick:<currency>:<ticketChannelId>
+//   done:submit:<currency>:<ticketChannelId>
+
+async function cmdDone(interaction) {
+  if (!isOrderChannel(interaction.channel)) {
+    return interaction.reply({
+      content:
+        'This command only works inside a TICKETS-category channel.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+  const ticketChannelId = interaction.channel.id;
+  const ticketChannelName = stripPriorityDots(interaction.channel.name);
+
+  const embed = new EmbedBuilder()
+    .setTitle('💼 Log a Delivery')
+    .setDescription(
+      'Logging a delivery for **' +
+        ticketChannelName +
+        '**.\n\nPick the currency you got paid in, then enter the amount.',
+    )
+    .setColor(0x3b82f6);
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('done:pick:ROBUX:' + ticketChannelId)
+      .setLabel('Robux')
+      .setEmoji('🔵')
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId('done:pick:USD:' + ticketChannelId)
+      .setLabel('USD')
+      .setEmoji('💵')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId('done:cancel')
+      .setLabel('Cancel')
+      .setStyle(ButtonStyle.Secondary),
+  );
+
+  await interaction.reply({
+    embeds: [embed],
+    components: [row],
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleDoneButton(interaction) {
+  const id = interaction.customId;
+  if (id === 'done:cancel') {
+    return interaction.update({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle('Cancelled')
+          .setDescription('No delivery logged.')
+          .setColor(0x6b7280),
+      ],
+      components: [],
+    });
+  }
+
+  // Format: done:pick:<currency>:<channelId>
+  const parts = id.split(':');
+  if (parts[1] !== 'pick' || parts.length < 4) return;
+  const currency = parts[2]; // 'ROBUX' or 'USD'
+  const ticketChannelId = parts[3];
+
+  const modal = new ModalBuilder()
+    .setCustomId('done:submit:' + currency + ':' + ticketChannelId)
+    .setTitle(currency === 'ROBUX' ? 'Robux Amount' : 'USD Amount');
+
+  const input = new TextInputBuilder()
+    .setCustomId('amount')
+    .setLabel(
+      currency === 'ROBUX'
+        ? 'How many Robux?'
+        : 'How many USD? (e.g. 50 or 50.5)',
+    )
+    .setPlaceholder(currency === 'ROBUX' ? '30000' : '50')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMinLength(1)
+    .setMaxLength(12);
+
+  modal.addComponents(new ActionRowBuilder().addComponents(input));
+
+  await interaction.showModal(modal);
+}
+
+async function handleDoneModalSubmit(interaction) {
+  // Format: done:submit:<currency>:<ticketChannelId>
+  const parts = interaction.customId.split(':');
+  if (parts.length < 4) return;
+  const currency = parts[2];
+  const ticketChannelId = parts[3];
+
+  const raw = interaction.fields.getTextInputValue('amount').trim();
+  // Accept "30000", "30,000", "30.000", "50.5" — Robux must be an
+  // integer; USD allows decimals.
+  const cleaned = raw.replace(/[^0-9.,]/g, '').replace(/,/g, '.');
+  const amount = parseFloat(cleaned);
+  if (!isFinite(amount) || amount <= 0) {
+    return interaction.reply({
+      content:
+        '❌ "' +
+        raw +
+        '" is not a valid amount. Try a positive number (e.g. `30000` for Robux, `50.5` for USD).',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+  if (currency === 'ROBUX' && !Number.isInteger(amount)) {
+    return interaction.reply({
+      content: '❌ Robux must be a whole number (no decimals).',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  // Resolve the ticket → client.
+  const ticketChannel = interaction.guild.channels.cache.get(ticketChannelId);
+  if (!ticketChannel) {
+    return interaction.editReply({
+      content:
+        "❌ Could not find the ticket channel anymore. Was it deleted?",
+    });
+  }
+  const ticketName = stripPriorityDots(ticketChannel.name);
+  const clientId = findTicketOwner(ticketChannel, client.user.id);
+  let clientName = 'unknown';
+  if (clientId) {
+    const m = await interaction.guild.members
+      .fetch(clientId)
+      .catch(() => null);
+    if (m) clientName = m.user.username;
+  }
+
+  const tx = {
+    type: 'delivery',
+    designer: interaction.user.id,
+    designerName: interaction.user.username,
+    client: clientId || 'unknown',
+    clientName,
+    ticket: ticketChannelId,
+    ticketName,
+    currency,
+    amount,
+    timestamp: Date.now(),
+  };
+
+  try {
+    await logTransaction(interaction.guild, tx);
+  } catch (e) {
+    console.error('logTransaction failed:', e?.message);
+    return interaction.editReply({
+      content:
+        '❌ Could not save the delivery. Make sure the bot has access to the payments-log channel.',
+    });
+  }
+
+  const formatted =
+    currency === 'ROBUX' ? formatRobux(amount) : formatUSD(amount);
+
+  const embed = new EmbedBuilder()
+    .setTitle('✅ Delivery logged')
+    .setDescription(
+      'Recorded **' +
+        formatted +
+        '** for **' +
+        ticketName +
+        '**' +
+        (clientId ? ' (client: <@' + clientId + '>)' : '') +
+        '.\n\nUse `/payments` to see your running balance.',
+    )
+    .setColor(0x22c55e)
+    .setTimestamp();
+
+  await interaction.editReply({ embeds: [embed] });
+}
+
+// =====================================================================
+// /payments view / /payments paid
+// =====================================================================
+
+async function cmdPayments(interaction) {
+  const sub = interaction.options.getSubcommand();
+  if (sub === 'view') return cmdPaymentsView(interaction);
+  if (sub === 'paid') return cmdPaymentsPaid(interaction);
+}
+
+async function cmdPaymentsView(interaction) {
+  const target = interaction.options.getUser('user') || interaction.user;
+  const isSelf = target.id === interaction.user.id;
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const row = paymentsLedger.get(target.id);
+  if (!row || (row.robux === 0 && row.usd === 0)) {
+    return interaction.editReply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle('💼 Pending payments')
+          .setDescription(
+            (isSelf
+              ? 'You have'
+              : '<@' + target.id + '> has') +
+              ' nothing pending right now. Clean slate. 🧹',
+          )
+          .setColor(0x6b7280),
+      ],
+    });
+  }
+
+  // Group only the OPEN deliveries (those that haven't been settled
+  // by a later payout) by client. Walk entries in order and rebuild
+  // the running balance per client; entries before the most recent
+  // payout drop out, the rest stack up.
+  // For simplicity we treat the sum since the LAST payout as
+  // "currently pending" — anything before that has been paid.
+  let lastPayoutTs = 0;
+  for (const e of row.entries) {
+    if (e.type === 'payout' && e.timestamp > lastPayoutTs) {
+      lastPayoutTs = e.timestamp;
+    }
+  }
+  const openDeliveries = row.entries.filter(
+    (e) => e.type === 'delivery' && e.timestamp > lastPayoutTs,
+  );
+  // Group by client.
+  const byClient = new Map();
+  for (const d of openDeliveries) {
+    const key = d.client || 'unknown';
+    let bucket = byClient.get(key);
+    if (!bucket) {
+      bucket = {
+        clientName: d.clientName || 'unknown',
+        robux: 0,
+        usd: 0,
+        count: 0,
+      };
+      byClient.set(key, bucket);
+    }
+    if (d.currency === 'ROBUX') bucket.robux += d.amount;
+    else if (d.currency === 'USD') bucket.usd += d.amount;
+    bucket.count++;
+  }
+
+  // Header totals
+  const totalLines = [];
+  if (row.robux > 0) totalLines.push('🔵 ' + formatRobux(row.robux));
+  if (row.usd > 0) totalLines.push('💵 ' + formatUSD(row.usd));
+
+  // Per-client breakdown
+  const clientLines = [];
+  for (const [clientId, bucket] of byClient.entries()) {
+    const parts = [];
+    if (bucket.robux > 0) parts.push(formatRobux(bucket.robux));
+    if (bucket.usd > 0) parts.push(formatUSD(bucket.usd));
+    const mention =
+      clientId === 'unknown' ? '*unknown client*' : '<@' + clientId + '>';
+    clientLines.push(
+      mention +
+        ' — ' +
+        parts.join(' + ') +
+        ' · ' +
+        bucket.count +
+        ' deliver' +
+        (bucket.count === 1 ? 'y' : 'ies'),
+    );
+  }
+
+  // Recent deliveries (last 5)
+  const recent = openDeliveries
+    .slice(-5)
+    .reverse()
+    .map((d) => {
+      const formatted =
+        d.currency === 'ROBUX' ? formatRobux(d.amount) : formatUSD(d.amount);
+      return (
+        '• `' +
+        d.ticketName +
+        '` — ' +
+        formatted +
+        ' · <t:' +
+        Math.floor(d.timestamp / 1000) +
+        ':d>'
+      );
+    });
+
+  const embed = new EmbedBuilder()
+    .setTitle(
+      '💼 Pending payments — ' +
+        (isSelf ? 'you' : target.username),
+    )
+    .setColor(0x3b82f6)
+    .addFields(
+      {
+        name: '💰 Total owed',
+        value: totalLines.join('\n') || 'Nothing.',
+        inline: false,
+      },
+      {
+        name: '👥 By client',
+        value: clientLines.join('\n') || '—',
+        inline: false,
+      },
+      {
+        name: '📜 Recent deliveries',
+        value: recent.join('\n') || '—',
+        inline: false,
+      },
+    )
+    .setFooter({ text: 'Cube Graphics · payouts run on the 1st of each month' })
+    .setTimestamp();
+
+  await interaction.editReply({ embeds: [embed] });
+}
+
+async function cmdPaymentsPaid(interaction) {
+  // Founder ONLY (not even staff/admin) — payday is sacred.
+  if (
+    !interaction.member ||
+    !interaction.member.roles ||
+    !interaction.member.roles.cache.has(FOUNDER_ROLE_ID)
+  ) {
+    return interaction.reply({
+      content: 'Only founders can settle payments.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  // Build the "about to settle" preview: every designer with > 0
+  // pending balance.
+  const pending = [];
+  for (const [designerId, row] of paymentsLedger.entries()) {
+    if (row.robux > 0 || row.usd > 0) {
+      pending.push({ designerId, robux: row.robux, usd: row.usd });
+    }
+  }
+  if (pending.length === 0) {
+    return interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle('💸 Nothing to settle')
+          .setDescription('No designer has a pending balance right now.')
+          .setColor(0x6b7280),
+      ],
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const lines = pending.map((p) => {
+    const parts = [];
+    if (p.robux > 0) parts.push(formatRobux(p.robux));
+    if (p.usd > 0) parts.push(formatUSD(p.usd));
+    return '<@' + p.designerId + '> — ' + parts.join(' + ');
+  });
+
+  const embed = new EmbedBuilder()
+    .setTitle('💸 Confirm payout')
+    .setDescription(
+      'About to settle the following balances:\n\n' +
+        lines.join('\n') +
+        '\n\nThis posts a PAYOUT entry in `#payments-log` for each designer and zeroes their pending balance. Cannot be undone except by manually deleting the payout entries.',
+    )
+    .setColor(0xf59e0b);
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('payments:paid_confirm')
+      .setLabel('Confirm payout')
+      .setStyle(ButtonStyle.Success)
+      .setEmoji('💸'),
+    new ButtonBuilder()
+      .setCustomId('payments:paid_cancel')
+      .setLabel('Cancel')
+      .setStyle(ButtonStyle.Secondary),
+  );
+
+  await interaction.reply({
+    embeds: [embed],
+    components: [row],
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handlePaymentsButton(interaction) {
+  if (interaction.customId === 'payments:paid_cancel') {
+    return interaction.update({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle('Cancelled')
+          .setDescription('No payouts were posted.')
+          .setColor(0x6b7280),
+      ],
+      components: [],
+    });
+  }
+
+  if (interaction.customId === 'payments:paid_confirm') {
+    if (!interaction.member.roles.cache.has(FOUNDER_ROLE_ID)) {
+      return interaction.reply({
+        content: 'Only founders can confirm a payout.',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+
+    await interaction.update({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle('💸 Settling...')
+          .setDescription('Posting payouts and zeroing balances.')
+          .setColor(0xf59e0b),
+      ],
+      components: [],
+    });
+
+    const settled = [];
+    for (const [designerId, row] of paymentsLedger.entries()) {
+      if (row.robux === 0 && row.usd === 0) continue;
+      const tx = {
+        type: 'payout',
+        designer: designerId,
+        designerName: row.entries.length
+          ? row.entries[row.entries.length - 1].designerName ||
+            'unknown'
+          : 'unknown',
+        robux: row.robux,
+        usd: row.usd,
+        timestamp: Date.now(),
+      };
+      try {
+        await logTransaction(interaction.guild, tx);
+        settled.push({ designerId, robux: tx.robux, usd: tx.usd });
+      } catch (e) {
+        console.error('payout failed for', designerId, e?.message);
+      }
+    }
+
+    const lines = settled.map((s) => {
+      const parts = [];
+      if (s.robux > 0) parts.push(formatRobux(s.robux));
+      if (s.usd > 0) parts.push(formatUSD(s.usd));
+      return '✅ <@' + s.designerId + '> — ' + parts.join(' + ');
+    });
+
+    return interaction.editReply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle('💸 Payout complete')
+          .setDescription(
+            (lines.join('\n') || 'No designers had a balance.') +
+              '\n\nAll pending balances zeroed. Next payday: ~1st of next month.',
+          )
+          .setColor(0x22c55e)
+          .setTimestamp(),
+      ],
+    });
+  }
+}
+
 // /reminder — sends a placeholder deadline reminder DM to a chosen
 // user. Pure testing tool: confirms DMs are reaching the recipient.
 // The placeholder content mirrors the real daily-6am reminder
@@ -1792,6 +2452,9 @@ async function cmdHelp(interaction) {
         '<:j_dot:1415844475120386230> `/removeticket user1: [user2: ...]` — Revoke up to 5 users from the current ticket\n' +
         '<:j_dot:1415844475120386230> `/dueby when:` — Set / show / clear the deadline (e.g. `2 days`, `tomorrow`, `clear`)\n' +
         '<:j_dot:1415844475120386230> `/load [user:]` — Show how many active deadlines a user is on\n' +
+        '<:j_dot:1415844475120386230> `/done` — Designer logs a delivery (price panel, Robux or USD)\n' +
+        '<:j_dot:1415844475120386230> `/payments view [user:]` — Show pending payments\n' +
+        '<:j_dot:1415844475120386230> `/payments paid` — Settle every pending payment (founder only)\n' +
         '<:j_dot:1415844475120386230> `/reminder user:` — Send a placeholder reminder DM (testing)',
     )
     .setFooter({ text: 'Tip: /sample and /deadlines also work in DMs and group DMs.' })
