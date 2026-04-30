@@ -2038,11 +2038,86 @@ async function cmdPayments(interaction) {
   if (sub === 'paid') return cmdPaymentsPaid(interaction);
 }
 
+// Founder/staff/admin overview: every designer with a non-zero
+// pending balance (since their last payout). Sorted by most-owed
+// USD desc, with Robux as a tiebreaker.
+async function renderGlobalPaymentsDashboard(interaction) {
+  const rows = [];
+  let totalRobux = 0;
+  let totalUSD = 0;
+  for (const [designerId, row] of paymentsLedger.entries()) {
+    if (row.robux === 0 && row.usd === 0) continue;
+    rows.push({
+      designerId,
+      robux: row.robux,
+      usd: row.usd,
+      entries: row.entries,
+    });
+    totalRobux += row.robux;
+    totalUSD += row.usd;
+  }
+
+  if (rows.length === 0) {
+    return interaction.editReply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle('💼 Pending payments — agency overview')
+          .setDescription('No designer has a pending balance. Clean slate. 🧹')
+          .setColor(0x6b7280),
+      ],
+    });
+  }
+
+  rows.sort((a, b) => b.usd - a.usd || b.robux - a.robux);
+
+  const lines = rows.map((r) => {
+    const parts = [];
+    if (r.robux > 0) parts.push(formatRobux(r.robux));
+    if (r.usd > 0) parts.push(formatUSD(r.usd));
+    return '<@' + r.designerId + '> — ' + parts.join(' + ');
+  });
+
+  const totalParts = [];
+  if (totalRobux > 0) totalParts.push('🔵 ' + formatRobux(totalRobux));
+  if (totalUSD > 0) totalParts.push('💵 ' + formatUSD(totalUSD));
+
+  const embed = new EmbedBuilder()
+    .setTitle('💼 Pending payments — agency overview')
+    .setColor(0x3b82f6)
+    .addFields(
+      {
+        name: '🏦 Total owed (all designers)',
+        value: totalParts.join('\n') || 'Nothing.',
+        inline: false,
+      },
+      {
+        name: '👤 Per designer (' + rows.length + ')',
+        value: lines.join('\n'),
+        inline: false,
+      },
+    )
+    .setFooter({
+      text:
+        'Use /payments view user:@designer for per-client breakdown · /payments paid to settle',
+    })
+    .setTimestamp();
+
+  return interaction.editReply({ embeds: [embed] });
+}
+
 async function cmdPaymentsView(interaction) {
-  const target = interaction.options.getUser('user') || interaction.user;
-  const isSelf = target.id === interaction.user.id;
+  const explicitUser = interaction.options.getUser('user');
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
+  // No user arg + caller is founder/staff/admin → render the
+  // global dashboard (every designer with a non-zero balance).
+  // Otherwise: render the specific user's balance (target or self).
+  if (!explicitUser && canManage(interaction.member)) {
+    return renderGlobalPaymentsDashboard(interaction);
+  }
+
+  const target = explicitUser || interaction.user;
+  const isSelf = target.id === interaction.user.id;
   const row = paymentsLedger.get(target.id);
   if (!row || (row.robux === 0 && row.usd === 0)) {
     return interaction.editReply({
