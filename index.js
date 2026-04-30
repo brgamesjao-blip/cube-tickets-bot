@@ -937,12 +937,15 @@ const slashCommands = [
     .addSubcommand((sub) =>
       sub
         .setName('view')
-        .setDescription("Show pending payments for a designer (defaults to you)")
-        .addUserOption((opt) =>
+        .setDescription('Show pending payments — defaults to your own')
+        .addStringOption((opt) =>
           opt
-            .setName('user')
-            .setDescription('Designer to check (defaults to you)')
-            .setRequired(false),
+            .setName('scope')
+            .setDescription(
+              'Pick "All" to see every designer (founder/staff/admin only)',
+            )
+            .setRequired(false)
+            .addChoices({ name: 'All', value: 'all' }),
         ),
     )
     .addSubcommand((sub) =>
@@ -2190,24 +2193,28 @@ async function renderGlobalPaymentsDashboard(interaction) {
 }
 
 async function cmdPaymentsView(interaction) {
-  const explicitUser = interaction.options.getUser('user');
+  const scope = interaction.options.getString('scope'); // 'all' or null
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  // No user arg + caller is founder/staff/admin → render the
-  // global dashboard. The check works in BOTH guild context
-  // (via canManage on interaction.member) AND DM context (via
-  // isManagerUser scanning every guild the bot shares with the
-  // caller).
-  const isManager = interaction.member
-    ? canManage(interaction.member)
-    : await isManagerUser(interaction.user.id);
-
-  if (!explicitUser && isManager) {
+  // scope = "all" → global dashboard, but ONLY founder/staff/admin
+  // can see other designers' balances. Designers run /payments view
+  // (no scope) to see their own.
+  if (scope === 'all') {
+    const isManager = interaction.member
+      ? canManage(interaction.member)
+      : await isManagerUser(interaction.user.id);
+    if (!isManager) {
+      return interaction.editReply({
+        content:
+          'Only founders, staff, or admins can use the **All** scope. Run `/payments view` without the scope option to see your own balance.',
+      });
+    }
     return renderGlobalPaymentsDashboard(interaction);
   }
 
-  const target = explicitUser || interaction.user;
-  const isSelf = target.id === interaction.user.id;
+  // Default: caller's own balance.
+  const target = interaction.user;
+  const isSelf = true;
   const row = paymentsLedger.get(target.id);
   if (!row || (row.robux === 0 && row.usd === 0)) {
     return interaction.editReply({
