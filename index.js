@@ -645,6 +645,19 @@ const slashCommands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName('load')
+    .setDescription(
+      "Show how many active deadlines a user is on (defaults to you)",
+    )
+    .addUserOption((opt) =>
+      opt
+        .setName('user')
+        .setDescription('User to check (defaults to you)')
+        .setRequired(false),
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
     .setName('reminder')
     .setDescription(
       'Send a placeholder deadline reminder DM to a user (for testing)',
@@ -824,6 +837,8 @@ async function handleSlashCommand(interaction) {
       return cmdDueBy(interaction);
     case 'attach':
       return cmdAttach(interaction);
+    case 'load':
+      return cmdLoad(interaction);
     case 'reminder':
       return cmdReminder(interaction);
     case 'audit':
@@ -1415,6 +1430,126 @@ function formatBytes(bytes) {
   return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
 }
 
+// Walk every guild + every TICKETS-category channel and pull the
+// tickets where the given user is on the access list (Member-type
+// overwrite) AND a dueby:<ms> tag is present in the topic AND the
+// deadline is still in the future. Returns rows sorted urgency-
+// first. Shared by /deadlines and /load.
+function collectUserTicketsWithDeadlines(userId) {
+  const rows = [];
+  for (const [, guild] of client.guilds.cache) {
+    const ticketsCategory = guild.channels.cache.find(
+      (c) =>
+        c.type === ChannelType.GuildCategory &&
+        c.name.toUpperCase() === TICKET_CATEGORY_NAME,
+    );
+    if (!ticketsCategory) continue;
+
+    const channels = guild.channels.cache.filter(
+      (c) =>
+        c.parentId === ticketsCategory.id &&
+        c.type === ChannelType.GuildText,
+    );
+
+    for (const ch of channels.values()) {
+      const userOverride = ch.permissionOverwrites.cache.get(userId);
+      if (!userOverride) continue;
+      const ts = readDueByFromTopic(ch);
+      if (ts == null || ts <= Date.now()) continue;
+      rows.push({
+        channelId: ch.id,
+        channelName: stripPriorityDots(ch.name),
+        guildName: guild.name,
+        deadline: ts,
+      });
+    }
+  }
+  rows.sort((a, b) => a.deadline - b.deadline);
+  return rows;
+}
+
+// /load [user:] — workload check. Counts the chosen user's TICKETS-
+// category deadlines, breaks them down by priority, and lists each
+// one with the Discord native relative timestamp. Tickets without
+// a deadline are NOT counted (per spec — that's the whole point;
+// load only matters where there's a clock running).
+async function cmdLoad(interaction) {
+  const target = interaction.options.getUser('user') || interaction.user;
+  await interaction.deferReply();
+
+  const rows = collectUserTicketsWithDeadlines(target.id);
+
+  const isSelf = target.id === interaction.user.id;
+  const ownerLabel = isSelf
+    ? 'your'
+    : '<@' + target.id + ">'s";
+
+  if (rows.length === 0) {
+    return interaction.editReply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle('📊 Deadline load')
+          .setDescription(
+            'No tickets with active deadlines under ' +
+              ownerLabel +
+              ' name right now.',
+          )
+          .setColor(0x6b7280),
+      ],
+    });
+  }
+
+  // Tally the priority bands so the header gives an at-a-glance read.
+  let red = 0;
+  let yellow = 0;
+  let green = 0;
+  for (const r of rows) {
+    const dot = priorityDotForDeadline(r.deadline);
+    if (dot === '🔴') red++;
+    else if (dot === '🟡') yellow++;
+    else if (dot === '🟢') green++;
+  }
+
+  const lines = rows.map((r) => {
+    const dot = priorityDotForDeadline(r.deadline) || '⚪';
+    const tsSec = Math.floor(r.deadline / 1000);
+    return (
+      dot +
+      ' **' +
+      r.channelName +
+      '** — <t:' +
+      tsSec +
+      ':R>\n' +
+      '<#' +
+      r.channelId +
+      '> · *' +
+      r.guildName +
+      '*'
+    );
+  });
+
+  const embed = new EmbedBuilder()
+    .setTitle('📊 Deadline load — ' + (isSelf ? 'you' : target.username))
+    .setDescription(
+      '**' +
+        rows.length +
+        ' active deadline' +
+        (rows.length === 1 ? '' : 's') +
+        '** · 🔴 ' +
+        red +
+        ' · 🟡 ' +
+        yellow +
+        ' · 🟢 ' +
+        green +
+        '\n\n' +
+        lines.join('\n\n'),
+    )
+    .setColor(red > 0 ? 0xef4444 : yellow > 0 ? 0xf59e0b : 0x22c55e)
+    .setFooter({ text: 'Most urgent first · tickets without a deadline are skipped' });
+
+  return interaction.editReply({ embeds: [embed] });
+}
+
 // /reminder — sends a placeholder deadline reminder DM to a chosen
 // user. Pure testing tool: confirms DMs are reaching the recipient.
 // The placeholder content mirrors the real daily-6am reminder
@@ -1587,46 +1722,13 @@ async function cmdSample(interaction) {
 
 async function cmdDeadlines(interaction) {
   // Works in DMs / group DMs (User Install context). When not in a
-  // guild, interaction.guild is null and we have to scan every guild
-  // the bot is in to gather the user's tickets.
+  // guild, interaction.guild is null — collectUserTicketsWithDeadlines
+  // walks every guild the bot is in.
   const targetUser = interaction.options.getUser('user') || interaction.user;
-  const targetId = targetUser.id;
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  const rows = [];
-  for (const [, guild] of client.guilds.cache) {
-    const ticketsCategory = guild.channels.cache.find(
-      (c) =>
-        c.type === ChannelType.GuildCategory &&
-        c.name.toUpperCase() === TICKET_CATEGORY_NAME,
-    );
-    if (!ticketsCategory) continue;
-
-    const channels = guild.channels.cache.filter(
-      (c) =>
-        c.parentId === ticketsCategory.id &&
-        c.type === ChannelType.GuildText,
-    );
-
-    for (const ch of channels.values()) {
-      // Only count tickets the target is on (Member-type override).
-      const userOverride = ch.permissionOverwrites.cache.get(targetId);
-      if (!userOverride) continue;
-
-      const ts = readDueByFromTopic(ch);
-      if (ts == null || ts <= Date.now()) continue;
-
-      rows.push({
-        channelId: ch.id,
-        channelName: stripPriorityDots(ch.name),
-        guildName: guild.name,
-        deadline: ts,
-      });
-    }
-  }
-
-  rows.sort((a, b) => a.deadline - b.deadline);
+  const rows = collectUserTicketsWithDeadlines(targetUser.id);
 
   if (rows.length === 0) {
     return interaction.editReply({
@@ -1689,6 +1791,7 @@ async function cmdHelp(interaction) {
         '<:j_dot:1415844475120386230> `/addticket user1: [user2: ...]` — Add up to 5 users to the current ticket\n' +
         '<:j_dot:1415844475120386230> `/removeticket user1: [user2: ...]` — Revoke up to 5 users from the current ticket\n' +
         '<:j_dot:1415844475120386230> `/dueby when:` — Set / show / clear the deadline (e.g. `2 days`, `tomorrow`, `clear`)\n' +
+        '<:j_dot:1415844475120386230> `/load [user:]` — Show how many active deadlines a user is on\n' +
         '<:j_dot:1415844475120386230> `/reminder user:` — Send a placeholder reminder DM (testing)',
     )
     .setFooter({ text: 'Tip: /sample and /deadlines also work in DMs and group DMs.' })
