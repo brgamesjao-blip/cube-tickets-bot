@@ -115,6 +115,27 @@ client.on('messageCreate', async (message) => {
     await createTicket(message.guild, member);
     message.reply('Ticket created for ' + member.displayName + '!');
   }
+
+  // !help — list every command currently available, grouped by who
+  // can use it. Update this block whenever a command is added or
+  // removed so it stays in sync with reality.
+  if (cmd === 'help') {
+    const helpEmbed = new EmbedBuilder()
+      .setColor(0x3b82f6)
+      .setTitle(
+        '<:Blue_Ticket:1415843891894026271>  Cube Tickets — Commands',
+      )
+      .setDescription(
+        '**Everyone**\n' +
+          '<:j_dot:1415844475120386230> `!help` — Show this list\n' +
+          '<:j_dot:1415844475120386230> `!close` — Close the current ticket (in a ticket channel)\n\n' +
+          '**Admin Only**\n' +
+          '<:j_dot:1415844475120386230> `!ordermsg` — Post the order banner with the Open-a-Ticket button\n' +
+          '<:j_dot:1415844475120386230> `!ticket @user` — Manually create a ticket for the mentioned user',
+      )
+      .setTimestamp();
+    return message.channel.send({ embeds: [helpEmbed] });
+  }
 });
 
 // ============================================
