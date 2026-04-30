@@ -169,6 +169,36 @@ function canManage(member) {
   return false;
 }
 
+// In DM/UserInstall context interaction.member is null, so the
+// usual canManage() check can't see role state. These helpers walk
+// every guild the bot is in and look up the user as a member there
+// — if the user has FOUNDER_ROLE_ID in ANY guild, they're treated
+// as a founder for cross-context commands like /payments paid.
+async function isFounderUser(userId) {
+  for (const [, guild] of client.guilds.cache) {
+    const m = await guild.members.fetch(userId).catch(() => null);
+    if (m && m.roles.cache.has(FOUNDER_ROLE_ID)) return true;
+  }
+  return false;
+}
+async function getFounderGuild(userId) {
+  for (const [, guild] of client.guilds.cache) {
+    const m = await guild.members.fetch(userId).catch(() => null);
+    if (m && m.roles.cache.has(FOUNDER_ROLE_ID)) return guild;
+  }
+  return null;
+}
+async function isManagerUser(userId) {
+  for (const [, guild] of client.guilds.cache) {
+    const m = await guild.members.fetch(userId).catch(() => null);
+    if (!m) continue;
+    if (m.permissions.has(PermissionFlagsBits.Administrator)) return true;
+    if (m.roles.cache.has(FOUNDER_ROLE_ID)) return true;
+    if (m.roles.cache.has(STAFF_ROLE_ID)) return true;
+  }
+  return false;
+}
+
 // Recover the original ticket owner from a channel's permission
 // overwrites. The talk/ticket channel pins exactly one Member-type
 // override that isn't the bot — that's the client.
@@ -472,21 +502,24 @@ async function ensurePaymentsChannel(guild) {
 // Append a transaction record to #payments-log AND update the
 // in-memory ledger so /payments stays consistent immediately.
 //
-// On the wire we send a pretty embed humans can read at a glance,
-// AND the canonical JSON tucked into the embed footer for the bot
-// to parse back on the next rebuild. Footer text is rendered small
-// and grey so it doesn't crowd the readable fields.
+// On the wire: pretty embed for humans + the canonical JSON tucked
+// into the message content as a SPOILER (`||tx:{...}||`). Spoilers
+// render as a black "click to reveal" pill in Discord, so the JSON
+// is hidden by default but still parseable on rebuild. No more
+// "tx:..." text leaking into the visible footer.
 async function logTransaction(guild, tx) {
   const channel = await ensurePaymentsChannel(guild);
   const embed = buildTransactionEmbed(tx);
-  await channel.send({ embeds: [embed] });
+  await channel.send({
+    content: '||tx:' + JSON.stringify(tx) + '||',
+    embeds: [embed],
+    allowedMentions: { parse: [] },
+  });
   applyTransactionToLedger(tx);
 }
 
 function buildTransactionEmbed(tx) {
-  const embed = new EmbedBuilder()
-    .setTimestamp(tx.timestamp || Date.now())
-    .setFooter({ text: 'tx:' + JSON.stringify(tx) });
+  const embed = new EmbedBuilder().setTimestamp(tx.timestamp || Date.now());
 
   if (tx.type === 'delivery') {
     const amountStr =
@@ -580,8 +613,18 @@ async function rebuildPaymentsLedger() {
         });
       if (!fetched || fetched.size === 0) break;
       for (const msg of fetched.values()) {
-        // Newer messages: pretty embed with canonical JSON stashed
-        // in the footer ("tx:{...}").
+        // Newest format: JSON stashed inside a spoiler in the
+        // message content (`||tx:{...}||`).
+        const spoiler = msg.content.match(/\|\|tx:([\s\S]+?)\|\|/);
+        if (spoiler) {
+          try {
+            txList.push(JSON.parse(spoiler[1]));
+            continue;
+          } catch (e) {
+            console.error('Bad JSON in spoiler:', e?.message);
+          }
+        }
+        // Legacy 1: JSON in embed footer ("tx:{...}").
         if (msg.embeds.length > 0) {
           const footer = msg.embeds[0]?.footer?.text || '';
           if (footer.startsWith('tx:')) {
@@ -593,8 +636,7 @@ async function rebuildPaymentsLedger() {
             }
           }
         }
-        // Backward compat: legacy messages were a fenced ```json
-        // code block in the message content.
+        // Legacy 2: fenced ```json code block in the content.
         const m = msg.content.match(/```json\s*([\s\S]+?)\s*```/);
         if (!m) continue;
         try {
@@ -907,8 +949,17 @@ const slashCommands = [
       sub
         .setName('paid')
         .setDescription(
-          'Settle ALL pending payments — founder only, runs on payday',
+          'Settle pending payments — founder only · pick a designer + amount',
         ),
+    )
+    .setIntegrationTypes(
+      ApplicationIntegrationType.GuildInstall,
+      ApplicationIntegrationType.UserInstall,
+    )
+    .setContexts(
+      InteractionContextType.Guild,
+      InteractionContextType.BotDM,
+      InteractionContextType.PrivateChannel,
     )
     .toJSON(),
 
@@ -1078,29 +1129,54 @@ client.on(Events.InteractionCreate, async (interaction) => {
     return;
   }
 
+  // Component / modal handlers run inside a try/catch so any
+  // unhandled throw surfaces a friendly ephemeral message instead
+  // of letting Discord show "Esta interação falhou".
+  const safe = async (fn) => {
+    try {
+      await fn();
+    } catch (e) {
+      console.error('Interaction handler error:', e);
+      const errMsg = {
+        content:
+          '❌ Something broke handling that interaction. Check the logs.',
+        flags: MessageFlags.Ephemeral,
+      };
+      try {
+        if (interaction.replied || interaction.deferred) {
+          await interaction.followUp(errMsg);
+        } else {
+          await interaction.reply(errMsg);
+        }
+      } catch (_) {
+        /* nothing else we can do */
+      }
+    }
+  };
+
   if (interaction.isButton()) {
     if (interaction.customId === 'open_ticket') {
-      await handleOpenTicketButton(interaction);
+      await safe(() => handleOpenTicketButton(interaction));
     } else if (interaction.customId === 'close_ticket') {
-      await handleCloseTicketButton(interaction);
+      await safe(() => handleCloseTicketButton(interaction));
     } else if (interaction.customId.startsWith('done:')) {
-      await handleDoneButton(interaction);
+      await safe(() => handleDoneButton(interaction));
     } else if (interaction.customId.startsWith('payments:')) {
-      await handlePaymentsButton(interaction);
+      await safe(() => handlePaymentsButton(interaction));
     }
   }
 
   if (interaction.isModalSubmit()) {
     if (interaction.customId.startsWith('done:submit:')) {
-      await handleDoneModalSubmit(interaction);
+      await safe(() => handleDoneModalSubmit(interaction));
     } else if (interaction.customId.startsWith('payments:paid_modal:')) {
-      await handlePaymentsModalSubmit(interaction);
+      await safe(() => handlePaymentsModalSubmit(interaction));
     }
   }
 
   if (interaction.isStringSelectMenu()) {
     if (interaction.customId === 'payments:paid_pick') {
-      await handlePaymentsSelect(interaction);
+      await safe(() => handlePaymentsSelect(interaction));
     }
   }
 });
@@ -2118,9 +2194,15 @@ async function cmdPaymentsView(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   // No user arg + caller is founder/staff/admin → render the
-  // global dashboard (every designer with a non-zero balance).
-  // Otherwise: render the specific user's balance (target or self).
-  if (!explicitUser && canManage(interaction.member)) {
+  // global dashboard. The check works in BOTH guild context
+  // (via canManage on interaction.member) AND DM context (via
+  // isManagerUser scanning every guild the bot shares with the
+  // caller).
+  const isManager = interaction.member
+    ? canManage(interaction.member)
+    : await isManagerUser(interaction.user.id);
+
+  if (!explicitUser && isManager) {
     return renderGlobalPaymentsDashboard(interaction);
   }
 
@@ -2264,11 +2346,12 @@ async function cmdPaymentsView(interaction) {
 const payoutSessions = new Map();
 
 async function cmdPaymentsPaid(interaction) {
-  if (
-    !interaction.member ||
-    !interaction.member.roles ||
-    !interaction.member.roles.cache.has(FOUNDER_ROLE_ID)
-  ) {
+  // Founder check that works in both guild and DM context.
+  const founder = interaction.member
+    ? interaction.member.roles?.cache?.has(FOUNDER_ROLE_ID)
+    : await isFounderUser(interaction.user.id);
+
+  if (!founder) {
     return interaction.reply({
       content: 'Only founders can settle payments.',
       flags: MessageFlags.Ephemeral,
@@ -2287,9 +2370,22 @@ async function cmdPaymentsPaid(interaction) {
     });
   }
 
+  // In DM context interaction.guild is null. Find the guild where
+  // the founder lives so logTransaction can write to its
+  // #payments-log channel.
+  const guild =
+    interaction.guild || (await getFounderGuild(interaction.user.id));
+  if (!guild) {
+    return interaction.reply({
+      content:
+        '❌ Could not find a Cube Graphics guild for you. Make sure the bot shares a server with you and you have the founder role.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
   payoutSessions.set(interaction.user.id, {
     settled: [],
-    guildId: interaction.guild.id,
+    guildId: guild.id,
     startedAt: Date.now(),
   });
 
@@ -2298,6 +2394,14 @@ async function cmdPaymentsPaid(interaction) {
     components: buildPickerComponents(),
     flags: MessageFlags.Ephemeral,
   });
+}
+
+// Resolve the guild a payout session is bound to (set when the
+// session was created). Used by handlers so DM-context interactions
+// still know where to log the transaction.
+async function getSessionGuild(session) {
+  if (!session) return null;
+  return client.guilds.cache.get(session.guildId) || null;
 }
 
 // Snapshot every designer with > 0 pending balance, sorted by USD
@@ -2458,7 +2562,10 @@ function buildDesignerPanelComponents(designerId) {
 }
 
 async function handlePaymentsSelect(interaction) {
-  if (!interaction.member.roles.cache.has(FOUNDER_ROLE_ID)) {
+  const founder = interaction.member
+    ? interaction.member.roles?.cache?.has(FOUNDER_ROLE_ID)
+    : await isFounderUser(interaction.user.id);
+  if (!founder) {
     return interaction.reply({
       content: 'Only founders can settle payments.',
       flags: MessageFlags.Ephemeral,
@@ -2525,7 +2632,10 @@ async function handlePaymentsButton(interaction) {
 
   // Pay everything (full balance) for one designer in one click.
   if (interaction.customId.startsWith('payments:paid_full:')) {
-    if (!interaction.member.roles.cache.has(FOUNDER_ROLE_ID)) {
+    const founderCheck = interaction.member
+      ? interaction.member.roles?.cache?.has(FOUNDER_ROLE_ID)
+      : await isFounderUser(interaction.user.id);
+    if (!founderCheck) {
       return interaction.reply({
         content: 'Only founders can settle payments.',
         flags: MessageFlags.Ephemeral,
@@ -2556,8 +2666,18 @@ async function handlePaymentsButton(interaction) {
       usd: row.usd,
       timestamp: Date.now(),
     };
+    // Sessions store guildId so DM-context interactions still know
+    // where to write the transaction.
+    const targetGuild =
+      interaction.guild || (await getSessionGuild(session));
+    if (!targetGuild) {
+      return interaction.reply({
+        content: '❌ Lost track of the guild for this session.',
+        flags: MessageFlags.Ephemeral,
+      });
+    }
     try {
-      await logTransaction(interaction.guild, tx);
+      await logTransaction(targetGuild, tx);
     } catch (e) {
       console.error('full payout failed:', e?.message);
       return interaction.reply({
@@ -2582,7 +2702,10 @@ async function handlePaymentsButton(interaction) {
 
   // Pay partial — open the modal.
   if (interaction.customId.startsWith('payments:paid_partial:')) {
-    if (!interaction.member.roles.cache.has(FOUNDER_ROLE_ID)) {
+    const founderCheck = interaction.member
+      ? interaction.member.roles?.cache?.has(FOUNDER_ROLE_ID)
+      : await isFounderUser(interaction.user.id);
+    if (!founderCheck) {
       return interaction.reply({
         content: 'Only founders can settle payments.',
         flags: MessageFlags.Ephemeral,
@@ -2657,7 +2780,10 @@ async function handlePaymentsModalSubmit(interaction) {
       flags: MessageFlags.Ephemeral,
     });
   }
-  if (!interaction.member.roles.cache.has(FOUNDER_ROLE_ID)) {
+  const founderModalCheck = interaction.member
+    ? interaction.member.roles?.cache?.has(FOUNDER_ROLE_ID)
+    : await isFounderUser(interaction.user.id);
+  if (!founderModalCheck) {
     return interaction.reply({
       content: 'Only founders can settle payments.',
       flags: MessageFlags.Ephemeral,
@@ -2732,8 +2858,15 @@ async function handlePaymentsModalSubmit(interaction) {
     timestamp: Date.now(),
   };
 
+  const partialTargetGuild =
+    interaction.guild || (await getSessionGuild(session));
+  if (!partialTargetGuild) {
+    return interaction.editReply({
+      content: '❌ Lost track of the guild for this session.',
+    });
+  }
   try {
-    await logTransaction(interaction.guild, tx);
+    await logTransaction(partialTargetGuild, tx);
   } catch (e) {
     console.error('partial payout failed:', e?.message);
     return interaction.editReply({
