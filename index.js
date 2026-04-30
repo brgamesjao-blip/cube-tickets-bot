@@ -247,21 +247,10 @@ function parseDeadline(input) {
   return null;
 }
 
-// Format milliseconds-until-deadline into a human "in N days/hours"
-// label. Only used inside embeds, never for the channel name.
-function formatRemaining(deadlineMs) {
-  const ms = deadlineMs - Date.now();
-  if (ms <= 0) return 'expired';
-  const minutes = Math.floor(ms / 60000);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-  if (days >= 2) return `in ${days} days`;
-  if (days === 1) return 'tomorrow';
-  if (hours >= 2) return `in ${hours} hours`;
-  if (hours === 1) return 'in 1 hour';
-  if (minutes >= 2) return `in ${minutes} minutes`;
-  return 'in less than a minute';
-}
+// (formatRemaining was dropped — Discord's <t:X:R> relative
+// timestamp handles the human label natively in the user's locale,
+// and we kept getting drift between our floor-division "2 days"
+// and Discord's rounded "3 days" view of the same moment.)
 
 // =====================================================================
 // DUEBY — channel topic schema, scheduling, daily reminder
@@ -447,39 +436,21 @@ async function dailyDueByCheck() {
 
     if (designerIds.length === 0) continue; // no one to ping
 
-    const remainingMs = deadlineMs - Date.now();
-    const hours = Math.floor(remainingMs / (60 * 60 * 1000));
-    const days = Math.floor(remainingMs / (24 * 60 * 60 * 1000));
-
-    let label;
-    if (hours <= 24) label = '**TODAY** ⚠️';
-    else if (days === 1) label = 'in **1 day**';
-    else label = 'in **' + days + ' days**';
-
     const dot = priorityDotForDeadline(deadlineMs) || '⚪';
     const color =
       dot === '🔴' ? 0xef4444 : dot === '🟡' ? 0xf59e0b : 0x22c55e;
 
     const designerMentions = designerIds.map((id) => '<@' + id + '>').join(' ');
     const ownerMention = ownerId ? '<@' + ownerId + '>' : '(unknown)';
+    const tsSec = Math.floor(deadlineMs / 1000);
 
     const embed = new EmbedBuilder()
       .setTitle(dot + ' Deadline reminder')
       .setDescription(
-        'Deadline for this project is ' +
-          label +
-          '.\n\n' +
-          'Client: ' +
-          ownerMention +
-          '\n' +
-          'Designer(s): ' +
-          designerMentions +
-          '\n' +
-          'Deadline: <t:' +
-          Math.floor(deadlineMs / 1000) +
-          ':F> (<t:' +
-          Math.floor(deadlineMs / 1000) +
-          ':R>)',
+        'Deadline for this project: <t:' + tsSec + ':R>\n\n' +
+          'Client: ' + ownerMention + '\n' +
+          'Designer(s): ' + designerMentions + '\n' +
+          'Full date: <t:' + tsSec + ':F>',
       )
       .setColor(color);
 
@@ -1232,19 +1203,14 @@ async function cmdDueBy(interaction) {
     const dot = priorityDotForDeadline(ts) || '⚪';
     const color =
       dot === '🔴' ? 0xef4444 : dot === '🟡' ? 0xf59e0b : 0x22c55e;
+    const tsSec = Math.floor(ts / 1000);
     return interaction.reply({
       embeds: [
         new EmbedBuilder()
           .setTitle(dot + ' Active deadline')
           .setDescription(
-            'Deadline: <t:' +
-              Math.floor(ts / 1000) +
-              ':F>\n' +
-              'Time remaining: ' +
-              formatRemaining(ts) +
-              ' (<t:' +
-              Math.floor(ts / 1000) +
-              ':R>)',
+            'Deadline: <t:' + tsSec + ':F>\n' +
+              'Time remaining: <t:' + tsSec + ':R>',
           )
           .setColor(color),
       ],
@@ -1303,22 +1269,30 @@ async function cmdDueBy(interaction) {
     });
   }
 
+  // Note whether we're replacing an existing deadline so the
+  // response embed can reflect "updated" vs "set". setChannelDueby
+  // already overrides cleanly — strips the old `dueby:` tag from
+  // the topic, replaces dueByMap entry, clears + re-schedules the
+  // expiry timeout, and re-applies the priority dot.
+  const wasSet =
+    dueByMap.has(interaction.channel.id) ||
+    readDueByFromTopic(interaction.channel) != null;
+
   await setChannelDueby(interaction.channel, ts);
 
   const dot = priorityDotForDeadline(ts) || '⚪';
   const color =
     dot === '🔴' ? 0xef4444 : dot === '🟡' ? 0xf59e0b : 0x22c55e;
+  const tsSec = Math.floor(ts / 1000);
 
   return interaction.reply({
     embeds: [
       new EmbedBuilder()
-        .setTitle(dot + ' Deadline set')
+        .setTitle(dot + (wasSet ? ' Deadline updated' : ' Deadline set'))
         .setDescription(
-          'Deadline locked: <t:' +
-            Math.floor(ts / 1000) +
-            ':F> (<t:' +
-            Math.floor(ts / 1000) +
-            ':R>)\n\nDesigners in this ticket get a reminder every day at 6 AM until the deadline expires.',
+          'New deadline: <t:' + tsSec + ':F>\n' +
+            'Time remaining: <t:' + tsSec + ':R>\n\n' +
+            'Designers in this ticket get a reminder every day at 6 AM until the deadline expires.',
         )
         .setColor(color),
     ],
@@ -1576,21 +1550,13 @@ async function cmdDeadlines(interaction) {
 
   const lines = rows.map((r) => {
     const dot = priorityDotForDeadline(r.deadline) || '⚪';
+    const tsSec = Math.floor(r.deadline / 1000);
     return (
       dot +
       ' **' +
       r.channelName +
-      '** — ' +
-      formatRemaining(r.deadline) +
-      ' (<t:' +
-      Math.floor(r.deadline / 1000) +
-      ':R>)' +
-      '\n' +
-      '<#' +
-      r.channelId +
-      '> · *' +
-      r.guildName +
-      '*'
+      '** — <t:' + tsSec + ':R>\n' +
+      '<#' + r.channelId + '> · *' + r.guildName + '*'
     );
   });
 
