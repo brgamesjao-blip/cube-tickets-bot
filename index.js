@@ -645,6 +645,19 @@ const slashCommands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName('reminder')
+    .setDescription(
+      'Send a placeholder deadline reminder DM to a user (for testing)',
+    )
+    .addUserOption((opt) =>
+      opt
+        .setName('user')
+        .setDescription('User to DM')
+        .setRequired(true),
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
     .setName('audit')
     .setDescription(
       'Open a game-audit ticket for a user (RTG team auto-added)',
@@ -811,6 +824,8 @@ async function handleSlashCommand(interaction) {
       return cmdDueBy(interaction);
     case 'attach':
       return cmdAttach(interaction);
+    case 'reminder':
+      return cmdReminder(interaction);
     case 'audit':
       return cmdAudit(interaction);
     case 'sample':
@@ -1400,6 +1415,67 @@ function formatBytes(bytes) {
   return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
 }
 
+// /reminder — sends a placeholder deadline reminder DM to a chosen
+// user. Pure testing tool: confirms DMs are reaching the recipient.
+// The placeholder content mirrors the real daily-6am reminder
+// embed shape (priority dot title + deadline timestamp + ping line)
+// so it doubles as a visual smoke test for that template.
+async function cmdReminder(interaction) {
+  if (!canManage(interaction.member)) {
+    return interaction.reply({
+      content: 'Only founders, staff, or admins can use this command.',
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const target = interaction.options.getUser('user');
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  // Fake a deadline 2 days out so the priority dot lands on yellow
+  // and the user can see what the rendered reminder actually
+  // looks like.
+  const fakeDeadline = Date.now() + 2 * 24 * 60 * 60 * 1000;
+  const tsSec = Math.floor(fakeDeadline / 1000);
+  const dot = priorityDotForDeadline(fakeDeadline) || '⚪';
+  const color =
+    dot === '🔴' ? 0xef4444 : dot === '🟡' ? 0xf59e0b : 0x22c55e;
+
+  const embed = new EmbedBuilder()
+    .setTitle(dot + ' Deadline reminder · placeholder')
+    .setDescription(
+      "Hey <@" +
+        target.id +
+        ">! This is a **test** reminder DM from the Cube Tickets bot.\n\n" +
+        'Deadline (placeholder): <t:' +
+        tsSec +
+        ':R>\n' +
+        'Full date: <t:' +
+        tsSec +
+        ':F>\n\n' +
+        'If you can read this, DMs are working — ignore the message.',
+    )
+    .setColor(color)
+    .setFooter({ text: 'Cube Tickets · automated test' })
+    .setTimestamp();
+
+  try {
+    const dm = await target.createDM();
+    await dm.send({ embeds: [embed] });
+    return interaction.editReply({
+      content:
+        '✅ Test reminder DM sent to **' + target.username + '**.',
+    });
+  } catch (e) {
+    console.error('cmdReminder DM failed:', e?.message);
+    return interaction.editReply({
+      content:
+        '❌ Could not DM **' +
+        target.username +
+        '**. They probably have DMs closed for this server, or have blocked the bot.',
+    });
+  }
+}
+
 async function cmdAudit(interaction) {
   if (!canManage(interaction.member)) {
     return interaction.reply({
@@ -1612,7 +1688,8 @@ async function cmdHelp(interaction) {
         '<:j_dot:1415844475120386230> `/redirect designer1: [designer2: ...]` — Spin up a TICKETS channel from a talk (up to 5 designers)\n' +
         '<:j_dot:1415844475120386230> `/addticket user1: [user2: ...]` — Add up to 5 users to the current ticket\n' +
         '<:j_dot:1415844475120386230> `/removeticket user1: [user2: ...]` — Revoke up to 5 users from the current ticket\n' +
-        '<:j_dot:1415844475120386230> `/dueby when:` — Set / show / clear the deadline (e.g. `2 days`, `tomorrow`, `clear`)',
+        '<:j_dot:1415844475120386230> `/dueby when:` — Set / show / clear the deadline (e.g. `2 days`, `tomorrow`, `clear`)\n' +
+        '<:j_dot:1415844475120386230> `/reminder user:` — Send a placeholder reminder DM (testing)',
     )
     .setFooter({ text: 'Tip: /sample and /deadlines also work in DMs and group DMs.' })
     .setTimestamp();
