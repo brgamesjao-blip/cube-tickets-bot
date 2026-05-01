@@ -1061,39 +1061,78 @@ const slashCommands = [
 
 async function registerSlashCommands() {
   try {
-    // If DEV_GUILD_ID is set, register the commands as GUILD
-    // commands on that single guild — guild commands propagate
-    // instantly (no Discord cache delay), so iteration during
-    // development doesn't cost up to an hour each push.
-    // If unset, register GLOBALLY (proper for production).
-    const devGuildId = process.env.DEV_GUILD_ID;
-    if (devGuildId) {
-      const guild = await client.guilds.fetch(devGuildId).catch(() => null);
-      if (guild) {
-        await guild.commands.set(slashCommands);
+    // Discord caches global slash commands client-side, so schema
+    // changes show "Este comando está desatualizado" until the cache
+    // refreshes (up to ~1 hour). Guild commands propagate INSTANTLY.
+    //
+    // Strategy:
+    //   1) Register the FULL command set on every guild the bot is in
+    //      (instant updates — eliminates the "outdated" error).
+    //   2) Register ONLY user-install commands globally — those need
+    //      to be global so they keep working in DMs / cross-guild.
+    //   3) Discord prefers guild commands over global when both exist
+    //      with the same name, so guild users always get the latest
+    //      schema even for user-install commands.
+    const isUserInstall = (cmd) =>
+      Array.isArray(cmd.integration_types) &&
+      cmd.integration_types.includes(1); // 1 = UserInstall
+    const userInstallCmds = slashCommands.filter(isUserInstall);
+
+    // 1) Per-guild registration (instant).
+    const results = await Promise.allSettled(
+      [...client.guilds.cache.values()].map((g) =>
+        g.commands
+          .set(slashCommands)
+          .then(() => ({ guild: g.name, ok: true }))
+          .catch((e) => ({ guild: g.name, ok: false, err: e?.message })),
+      ),
+    );
+    for (const r of results) {
+      if (r.status === 'fulfilled' && r.value.ok) {
         console.log(
           'Registered ' +
             slashCommands.length +
-            ' slash commands on guild "' +
-            guild.name +
-            '" (instant; DEV_GUILD_ID set).',
+            ' commands on guild "' +
+            r.value.guild +
+            '" (instant).',
         );
-        return;
+      } else {
+        const v = r.status === 'fulfilled' ? r.value : { err: r.reason };
+        console.error(
+          'Guild registration failed for "' +
+            (v.guild || '?') +
+            '":',
+          v.err,
+        );
       }
-      console.warn(
-        'DEV_GUILD_ID set but guild fetch failed — falling through to global registration.',
-      );
     }
-    await client.application.commands.set(slashCommands);
+
+    // 2) Global registration — only user-install commands, so DMs /
+    //    cross-guild contexts keep working. Other commands stay
+    //    guild-only.
+    await client.application.commands.set(userInstallCmds);
     console.log(
       'Registered ' +
-        slashCommands.length +
-        ' slash commands globally (may take up to 1 hour to propagate).',
+        userInstallCmds.length +
+        ' user-install commands globally (DM-capable).',
     );
   } catch (e) {
     console.error('Failed to register slash commands:', e);
   }
 }
+
+// Re-register on every new guild join — guarantees commands appear
+// instantly when the bot is added to a server.
+client.on('guildCreate', async (guild) => {
+  try {
+    await guild.commands.set(slashCommands);
+    console.log(
+      'Registered commands on new guild "' + guild.name + '" (guildCreate).',
+    );
+  } catch (e) {
+    console.error('guildCreate registration failed:', e?.message);
+  }
+});
 
 // =====================================================================
 // READY
