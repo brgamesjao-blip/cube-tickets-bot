@@ -1077,12 +1077,17 @@ async function registerSlashCommands() {
       Array.isArray(cmd.integration_types) &&
       cmd.integration_types.includes(1); // 1 = UserInstall
     const userInstallCmds = slashCommands.filter(isUserInstall);
+    // Per-guild gets EVERYTHING EXCEPT user-install commands. The
+    // user-install ones are registered globally so they work in DMs;
+    // mixing both registrations for the same command name causes
+    // Discord to surface the command twice in the picker.
+    const guildOnlyCmds = slashCommands.filter((c) => !isUserInstall(c));
 
     // 1) Per-guild registration (instant).
     const results = await Promise.allSettled(
       [...client.guilds.cache.values()].map((g) =>
         g.commands
-          .set(slashCommands)
+          .set(guildOnlyCmds)
           .then(() => ({ guild: g.name, ok: true }))
           .catch((e) => ({ guild: g.name, ok: false, err: e?.message })),
       ),
@@ -1091,8 +1096,8 @@ async function registerSlashCommands() {
       if (r.status === 'fulfilled' && r.value.ok) {
         console.log(
           'Registered ' +
-            slashCommands.length +
-            ' commands on guild "' +
+            guildOnlyCmds.length +
+            ' guild-only commands on guild "' +
             r.value.guild +
             '" (instant).',
         );
@@ -1122,12 +1127,24 @@ async function registerSlashCommands() {
 }
 
 // Re-register on every new guild join — guarantees commands appear
-// instantly when the bot is added to a server.
+// instantly when the bot is added to a server. Only the guild-only
+// subset; user-install commands stay global so DMs keep working.
 client.on('guildCreate', async (guild) => {
   try {
-    await guild.commands.set(slashCommands);
+    const guildOnlyCmds = slashCommands.filter(
+      (c) =>
+        !(
+          Array.isArray(c.integration_types) &&
+          c.integration_types.includes(1)
+        ),
+    );
+    await guild.commands.set(guildOnlyCmds);
     console.log(
-      'Registered commands on new guild "' + guild.name + '" (guildCreate).',
+      'Registered ' +
+        guildOnlyCmds.length +
+        ' guild-only commands on new guild "' +
+        guild.name +
+        '" (guildCreate).',
     );
   } catch (e) {
     console.error('guildCreate registration failed:', e?.message);
