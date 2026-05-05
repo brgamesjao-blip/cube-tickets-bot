@@ -325,21 +325,15 @@ async function setChannelDueby(channel, deadlineMs) {
   dueByMap.set(channel.id, deadlineMs);
   scheduleDueByExpiry(channel.id, deadlineMs);
 
-  // Topic edits hit a much looser rate limit than channel renames
-  // (5/60s vs 2/10min), so we AWAIT this one. Without an await, a
-  // failed setTopic leaves the channel's persistent state stale and
-  // /deadlines (which reads from the topic) reports the wrong
-  // value. Caller must defer the interaction first; cmdDueBy does.
-  try {
-    await channel.setTopic(newTopic);
-  } catch (e) {
-    console.error('setTopic (set) failed:', e?.message);
-  }
-
-  // Channel rename stays fire-and-forget — the 2/10min limit can
-  // stall it for many minutes and we don't want to block the
-  // interaction reply on it. Worst case the priority dot stays
-  // stale until the next 6am rebuild pass renames it.
+  // Both setTopic and setName are fire-and-forget: discord.js
+  // queues rate-limited calls indefinitely (no internal timeout),
+  // so awaiting them can pin the interaction's deferred reply for
+  // many minutes. The in-memory dueByMap is the runtime source of
+  // truth; /deadlines and /dueby (no arg) read from the map first
+  // and only fall back to the topic for restart recovery.
+  channel.setTopic(newTopic).catch((e) =>
+    console.error('background setTopic (set) failed:', e?.message),
+  );
   applyPriorityDot(channel, deadlineMs).catch((e) =>
     console.error('background rename (set) failed:', e?.message),
   );
