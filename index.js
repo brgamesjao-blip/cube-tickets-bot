@@ -325,9 +325,21 @@ async function setChannelDueby(channel, deadlineMs) {
   dueByMap.set(channel.id, deadlineMs);
   scheduleDueByExpiry(channel.id, deadlineMs);
 
-  channel.setTopic(newTopic).catch((e) =>
-    console.error('background setTopic (set) failed:', e?.message),
-  );
+  // Topic edits hit a much looser rate limit than channel renames
+  // (5/60s vs 2/10min), so we AWAIT this one. Without an await, a
+  // failed setTopic leaves the channel's persistent state stale and
+  // /deadlines (which reads from the topic) reports the wrong
+  // value. Caller must defer the interaction first; cmdDueBy does.
+  try {
+    await channel.setTopic(newTopic);
+  } catch (e) {
+    console.error('setTopic (set) failed:', e?.message);
+  }
+
+  // Channel rename stays fire-and-forget — the 2/10min limit can
+  // stall it for many minutes and we don't want to block the
+  // interaction reply on it. Worst case the priority dot stays
+  // stale until the next 6am rebuild pass renames it.
   applyPriorityDot(channel, deadlineMs).catch((e) =>
     console.error('background rename (set) failed:', e?.message),
   );
@@ -1881,7 +1893,13 @@ function collectUserTicketsWithDeadlines(userId) {
     for (const ch of channels.values()) {
       const userOverride = ch.permissionOverwrites.cache.get(userId);
       if (!userOverride) continue;
-      const ts = readDueByFromTopic(ch);
+      // Prefer dueByMap (in-memory source of truth this process)
+      // over the topic. The topic is the durable backup that
+      // restart-recovery rebuilds the map from, but during runtime
+      // a failed setTopic could leave the topic stale while the
+      // map is correct. Reading from the map first means /deadlines
+      // never reports a value the user thought they overwrote.
+      const ts = dueByMap.get(ch.id) ?? readDueByFromTopic(ch);
       if (ts == null || ts <= Date.now()) continue;
       rows.push({
         channelId: ch.id,
