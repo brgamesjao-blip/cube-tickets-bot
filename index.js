@@ -2170,6 +2170,22 @@ async function handleDoneModalSubmit(interaction) {
     });
   }
 
+  // Auto-clear the deadline now that the delivery has been logged.
+  // Avoids the designer having to remember to run /dueby clear, and
+  // keeps /deadlines + the priority dot in sync with reality.
+  // We swallow the result — clearChannelDueby handles its own
+  // rate-limit fallback for the rename.
+  let hadDeadline = false;
+  if (
+    dueByMap.has(ticketChannelId) ||
+    readDueByFromTopic(ticketChannel) != null
+  ) {
+    hadDeadline = true;
+    clearChannelDueby(ticketChannel).catch((e) =>
+      console.error('auto-clear deadline on /done failed:', e?.message),
+    );
+  }
+
   const formatted =
     currency === 'ROBUX' ? formatRobux(amount) : formatUSD(amount);
 
@@ -2182,7 +2198,8 @@ async function handleDoneModalSubmit(interaction) {
         ticketName +
         '**' +
         (clientId ? ' (client: <@' + clientId + '>)' : '') +
-        '.\n\nUse `/payments` to see your running balance.',
+        '.\n\nUse `/payments` to see your running balance.' +
+        (hadDeadline ? '\n\n*Deadline cleared automatically.*' : ''),
     )
     .setColor(0x22c55e)
     .setTimestamp();
