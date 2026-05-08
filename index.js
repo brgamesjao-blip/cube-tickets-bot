@@ -736,14 +736,13 @@ async function dailyDueByCheck() {
       continue;
     }
 
-    // Re-apply the dot (in case Discord renamed the channel during
-    // a manual edit — keeps every active ticket in sync).
+    // Re-apply the dot — keeps every active ticket in sync if a
+    // Discord rename or manual edit drifted the colour.
     await applyPriorityDot(channel, deadlineMs);
 
     // Identify designers in the ticket: every Member-type override
     // that isn't the bot or the ticket owner. Founder/Staff are
-    // ROLE-type overrides, so they don't show up here — they're
-    // pinged via their roles separately if needed.
+    // ROLE-type overrides, so they don't show up here.
     const ownerId = findTicketOwner(channel, client.user.id);
     const designerIds = channel.permissionOverwrites.cache
       .filter(
@@ -754,30 +753,39 @@ async function dailyDueByCheck() {
       )
       .map((po) => po.id);
 
-    if (designerIds.length === 0) continue; // no one to ping
+    if (designerIds.length === 0) continue; // no one to remind
 
     const dot = priorityDotForDeadline(deadlineMs) || '⚪';
     const color =
       dot === '🔴' ? 0xef4444 : dot === '🟡' ? 0xf59e0b : 0x22c55e;
-
-    const designerMentions = designerIds.map((id) => '<@' + id + '>').join(' ');
-    const ownerMention = ownerId ? '<@' + ownerId + '>' : '(unknown)';
     const tsSec = Math.floor(deadlineMs / 1000);
+    const ticketName = stripPriorityDots(channel.name);
 
     const embed = new EmbedBuilder()
       .setTitle(dot + ' Deadline reminder')
       .setDescription(
-        'Deadline for this project: <t:' + tsSec + ':R>\n\n' +
-          'Client: ' + ownerMention + '\n' +
-          'Designer(s): ' + designerMentions + '\n' +
-          'Full date: <t:' + tsSec + ':F>',
+        'Project: **' + ticketName + '**\n' +
+          'Deadline: <t:' + tsSec + ':R>\n' +
+          'Full date: <t:' + tsSec + ':F>\n\n' +
+          'Channel: <#' + channelId + '>',
       )
       .setColor(color);
 
-    try {
-      await channel.send({ content: designerMentions, embeds: [embed] });
-    } catch (e) {
-      console.error('dailyDueByCheck send error:', e?.message);
+    // DM each designer directly. Skips the channel post entirely so
+    // the client doesn't get pinged on the deadline reminder — keeps
+    // designer workload private + avoids the old client/designer
+    // confusion in the channel embed.
+    for (const designerId of designerIds) {
+      try {
+        const user = await client.users.fetch(designerId).catch(() => null);
+        if (!user) continue;
+        await user.send({ embeds: [embed] });
+      } catch (e) {
+        console.error(
+          'dailyDueByCheck DM failed for ' + designerId + ':',
+          e?.message,
+        );
+      }
     }
   }
 }
