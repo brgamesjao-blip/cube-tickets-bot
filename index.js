@@ -199,14 +199,38 @@ async function isManagerUser(userId) {
   return false;
 }
 
-// Recover the original ticket owner from a channel's permission
-// overwrites. The talk/ticket channel pins exactly one Member-type
-// override that isn't the bot — that's the client.
+// Recover the original ticket owner. The channel topic pins it
+// explicitly as `owner:<userId>` (set at ticket-creation time),
+// which is the source of truth. Fall back to the first non-bot
+// Member override only for legacy channels created before the
+// topic-tagging change — note that this fallback is ambiguous when
+// designers are attached as Member overrides, so the topic tag is
+// what makes the lookup deterministic.
 function findTicketOwner(channel, botId) {
-  const override = channel.permissionOverwrites.cache.find(
+  if (channel?.topic) {
+    const m = channel.topic.match(/owner:(\d+)/);
+    if (m) return m[1];
+  }
+  const override = channel?.permissionOverwrites?.cache?.find(
     (po) => po.type === OverwriteType.Member && po.id !== botId,
   );
   return override ? override.id : null;
+}
+
+// Stamp the ticket owner into the channel topic. Preserves any
+// pre-existing tags on the topic (e.g. dueby:...). Fire-and-forget
+// because Discord rate-limits topic edits and we don't want to
+// stall ticket creation on it.
+function setChannelOwner(channel, ownerId) {
+  const existing = (channel.topic || '').replace(/owner:\d+\s*/g, '').trim();
+  const newTopic = (
+    'owner:' + ownerId + (existing ? ' ' + existing : '')
+  ).slice(0, 1024);
+  return channel
+    .setTopic(newTopic)
+    .catch((e) =>
+      console.error('background setChannelOwner failed:', e?.message),
+    );
 }
 
 // Strip every leading priority dot from a channel name (so we can
@@ -3343,6 +3367,8 @@ async function createTalkTicket(guild, member) {
       ],
     });
 
+    setChannelOwner(ticketChannel, member.id);
+
     const welcomeEmbed = new EmbedBuilder()
       .setTitle('Talk — ' + member.displayName)
       .setDescription(
@@ -3425,6 +3451,8 @@ async function createAuditTicket(guild, member) {
       permissionOverwrites: overwrites,
     });
 
+    setChannelOwner(auditChannel, member.id);
+
     const welcomeEmbed = new EmbedBuilder()
       .setTitle('Game Audit — ' + member.displayName)
       .setDescription(
@@ -3503,6 +3531,10 @@ async function createOrderTicket(guild, clientMember, designerMembers) {
       parent: category.id,
       permissionOverwrites: overwrites,
     });
+
+    // Persist the owner ID in the topic so findTicketOwner stays
+    // deterministic even when designers are also Member overrides.
+    setChannelOwner(ticketChannel, clientMember.id);
 
     const designerMentions = designerMembers
       .map((d) => '<@' + d.id + '>')
