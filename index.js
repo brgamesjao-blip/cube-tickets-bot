@@ -1058,6 +1058,7 @@ const slashCommands = [
           { name: 'Trispil', value: 'trispil' },
           { name: 'Soul', value: 'soul' },
           { name: 'Art', value: 'art' },
+          { name: 'Pontin', value: 'pontin' },
         ),
     )
     .setIntegrationTypes(
@@ -3135,6 +3136,7 @@ const DESIGNER_LABELS = {
   trispil: 'Trispil',
   soul: 'Soul',
   art: 'Art',
+  pontin: 'Pontin',
 };
 
 async function cmdSample(interaction) {
@@ -3260,7 +3262,7 @@ async function cmdHelp(interaction) {
         '<:j_dot:1415844475120386230> `/help` — Show this list\n' +
         '<:j_dot:1415844475120386230> `/close` — Close the current ticket (talk OR order)\n' +
         '<:j_dot:1415844475120386230> `/attach` — Drop a file in the ticket via a clean embed\n' +
-        '<:j_dot:1415844475120386230> `/sample` — Show a designer\'s sample work · S0da / Will / Nosher / Trispil / Soul / Art · works in DMs too\n' +
+        '<:j_dot:1415844475120386230> `/sample` — Show a designer\'s sample work · S0da / Will / Nosher / Trispil / Soul / Art / Pontin · works in DMs too\n' +
         '<:j_dot:1415844475120386230> `/deadlines` — Show your (or someone else\'s) active deadlines · works in DMs too\n\n' +
         '**Founder / Staff / Admin**\n' +
         '<:j_dot:1415844475120386230> `/ordermsg` — Post the order banner with the Open-a-Ticket button (admin only)\n' +
