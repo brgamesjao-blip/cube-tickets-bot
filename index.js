@@ -1060,6 +1060,7 @@ const slashCommands = [
           { name: 'Art', value: 'art' },
           { name: 'Pontin', value: 'pontin' },
           { name: 'Zack', value: 'zack' },
+          { name: 'Artieezy', value: 'artieezy' },
         ),
     )
     .setIntegrationTypes(
@@ -3139,6 +3140,7 @@ const DESIGNER_LABELS = {
   art: 'Art',
   pontin: 'Pontin',
   zack: 'Zack',
+  artieezy: 'Artieezy',
 };
 
 async function cmdSample(interaction) {
@@ -3264,7 +3266,7 @@ async function cmdHelp(interaction) {
         '<:j_dot:1415844475120386230> `/help` — Show this list\n' +
         '<:j_dot:1415844475120386230> `/close` — Close the current ticket (talk OR order)\n' +
         '<:j_dot:1415844475120386230> `/attach` — Drop a file in the ticket via a clean embed\n' +
-        '<:j_dot:1415844475120386230> `/sample` — Show a designer\'s sample work · S0da / Will / Nosher / Trispil / Soul / Art / Pontin / Zack · works in DMs too\n' +
+        '<:j_dot:1415844475120386230> `/sample` — Show a designer\'s sample work · S0da / Will / Nosher / Trispil / Soul / Art / Pontin / Zack / Artieezy · works in DMs too\n' +
         '<:j_dot:1415844475120386230> `/deadlines` — Show your (or someone else\'s) active deadlines · works in DMs too\n\n' +
         '**Founder / Staff / Admin**\n' +
         '<:j_dot:1415844475120386230> `/ordermsg` — Post the order banner with the Open-a-Ticket button (admin only)\n' +
